@@ -1,0 +1,60 @@
+<Window x:Class="LoginActivityTriage.App.Views.LogonStoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Logon Story" Height="640" Width="1180"
+        Background="{StaticResource AppBackground}"
+        WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <Style x:Key="StoryRowStyle" TargetType="DataGridRow">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsFailure}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource FailBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsPrivileged}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource PrivBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsIoc}" Value="True">
+                    <Setter Property="Background" Value="{StaticResource IocBrush}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel Margin="8">
+        <Border DockPanel.Dock="Top" Style="{StaticResource CardStyle}">
+            <StackPanel>
+                <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding PivotDescription}" Foreground="{StaticResource MutedTextBrush}" Margin="0,4,0,0" />
+                <TextBlock Foreground="{StaticResource MutedTextBrush}" Margin="0,2,0,0">
+                    <Run Text="Anchor: " />
+                    <Run Text="{Binding Anchor, StringFormat=yyyy-MM-dd HH:mm:ss, Mode=OneWay}" />
+                    <Run Text="   Events in window: " />
+                    <Run Text="{Binding Events.Count, Mode=OneWay}" />
+                </TextBlock>
+            </StackPanel>
+        </Border>
+
+        <DataGrid ItemsSource="{Binding Events}" AutoGenerateColumns="False" IsReadOnly="True"
+                  EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True"
+                  GridLinesVisibility="Horizontal" HeadersVisibility="Column" Margin="0,8,0,0"
+                  Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}"
+                  RowBackground="{StaticResource CardBackground}" AlternatingRowBackground="#FF33363D"
+                  RowStyle="{StaticResource StoryRowStyle}" CellStyle="{StaticResource IocCellStyle}"
+                  ClipboardCopyMode="IncludeHeader">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                <DataGridTextColumn Header="Host" Binding="{Binding Hostname}" Width="120" />
+                <DataGridTextColumn Header="Event ID" Binding="{Binding EventId}" Width="70" />
+                <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}" Width="170" />
+                <DataGridTextColumn Header="User" Binding="{Binding TargetUserName}" Width="130" />
+                <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="120" />
+                <DataGridTextColumn Header="Logon Type" Binding="{Binding LogonTypeDescription}" Width="150" />
+                <DataGridTextColumn Header="Auth" Binding="{Binding AuthenticationPackage}" Width="100" />
+                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="100" />
+                <DataGridTextColumn Header="Failure Reason" Binding="{Binding FailureReason}" Width="*" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</Window>

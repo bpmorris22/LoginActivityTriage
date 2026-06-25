@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>LoginActivityTriage</AssemblyName>
+    <RootNamespace>LoginActivityTriage.App</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LoginActivityTriage.Core\LoginActivityTriage.Core.csproj" />
+    <ProjectReference Include="..\LoginActivityTriage.Parsing\LoginActivityTriage.Parsing.csproj" />
+    <ProjectReference Include="..\LoginActivityTriage.Storage\LoginActivityTriage.Storage.csproj" />
+    <ProjectReference Include="..\LoginActivityTriage.Analytics\LoginActivityTriage.Analytics.csproj" />
+    <ProjectReference Include="..\LoginActivityTriage.Export\LoginActivityTriage.Export.csproj" />
+  </ItemGroup>
+
+</Project>

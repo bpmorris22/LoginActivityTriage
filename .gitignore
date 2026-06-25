@@ -1,0 +1,17 @@
+## .NET build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+
+## Rider / VS
+.vs/
+.idea/
+
+## Case databases & exports (never commit evidence)
+*.latdb
+*.latdb-wal
+*.latdb-shm
+*.db
+*.sqlite

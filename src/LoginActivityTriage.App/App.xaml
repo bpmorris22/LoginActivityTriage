@@ -1,0 +1,439 @@
+<Application x:Class="LoginActivityTriage.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:conv="clr-namespace:LoginActivityTriage.App.Converters"
+             xmlns:prim="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
+             StartupUri="Views/MainWindow.xaml">
+    <Application.Resources>
+        <conv:ElevatedToTextConverter x:Key="ElevatedToText" />
+        <conv:BoolToYesNoConverter x:Key="BoolToYesNo" />
+
+        <!-- Palette -->
+        <SolidColorBrush x:Key="AppBackground" Color="#FF1E1F22" />
+        <SolidColorBrush x:Key="PanelBackground" Color="#FF26282C" />
+        <SolidColorBrush x:Key="CardBackground" Color="#FF2D3037" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#FF4C8DFF" />
+        <SolidColorBrush x:Key="TextBrush" Color="#FFEDEDED" />
+        <SolidColorBrush x:Key="MutedTextBrush" Color="#FFA0A4AB" />
+        <SolidColorBrush x:Key="FailBrush" Color="#FFEB5B5B" />
+        <SolidColorBrush x:Key="PrivBrush" Color="#FFE9B14C" />
+        <!-- Row tint used to flag rows that match a loaded IOC (host / IP / user). -->
+        <SolidColorBrush x:Key="IocBrush" Color="#FF6E1F8C" />
+        <SolidColorBrush x:Key="IocAccentBrush" Color="#FFC678E8" />
+
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        </Style>
+
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource CardBackground}" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="12" />
+            <Setter Property="Margin" Value="6" />
+        </Style>
+
+        <Style x:Key="CardValue" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="26" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        </Style>
+
+        <Style x:Key="CardLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+        </Style>
+
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="6,10,6,4" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        </Style>
+
+        <!-- Dark, readable column headers for ListView/GridView (WPF default is a near-white bar). -->
+        <Style TargetType="GridViewColumnHeader">
+            <Setter Property="Background" Value="{StaticResource PanelBackground}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="BorderBrush" Value="#FF3A3D44" />
+            <Setter Property="BorderThickness" Value="0,0,1,1" />
+        </Style>
+
+        <!-- Match DataGrid column headers to the dark theme as well. -->
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{StaticResource PanelBackground}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="BorderBrush" Value="#FF3A3D44" />
+            <Setter Property="BorderThickness" Value="0,0,1,1" />
+        </Style>
+
+        <!-- Dark-theme tab headers (WPF default tabs are a near-white bar => unreadable
+             with light header text). Retemplated so selected/hover states are visible. -->
+        <Style TargetType="TabItem">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Background" Value="{StaticResource PanelBackground}" />
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="#FF3A3D44" BorderThickness="1,1,1,0"
+                                Margin="2,0,0,0" CornerRadius="4,4,0,0"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter ContentSource="Header"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource CardBackground}" />
+                                <Setter TargetName="Bd" Property="BorderThickness" Value="1,2,1,0" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="False">
+                                <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FF34373E" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ============================================================
+             Dark-theme input controls.
+
+             WPF's stock TextBox/ComboBox/DatePicker render on a near-white
+             chrome. Combined with the global light TextBlock foreground above,
+             a default ComboBox shows near-white text on a white box => the
+             unreadable toolbar "Story window" selector. These styles bring the
+             filter/date inputs into the dark theme so they are legible and look
+             like intentional controls. They are implicit (un-keyed) so every
+             TextBox/ComboBox/DatePicker in both windows picks them up.
+             ============================================================ -->
+
+        <!-- Free-text filter inputs (User / Host / Source IP / Event ID / ...) -->
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{StaticResource CardBackground}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="#FF3A3D44" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="4,2" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <!-- The editable text area of the From/To date-range pickers. -->
+        <Style TargetType="{x:Type prim:DatePickerTextBox}">
+            <Setter Property="Background" Value="{StaticResource CardBackground}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <!-- The From/To date-range pickers (outer chrome + drop-down button). -->
+        <Style TargetType="DatePicker">
+            <Setter Property="Background" Value="{StaticResource CardBackground}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="#FF3A3D44" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Height" Value="24" />
+        </Style>
+
+        <!-- Dark drop-down toggle used by the ComboBox template below. -->
+        <ControlTemplate x:Key="ThemedComboToggle" TargetType="ToggleButton">
+            <Border x:Name="Bd" Background="{StaticResource CardBackground}"
+                    BorderBrush="#FF3A3D44" BorderThickness="1" CornerRadius="3">
+                <Path x:Name="Arrow" HorizontalAlignment="Right" VerticalAlignment="Center"
+                      Margin="0,0,8,0" Data="M0,0 L4,4 L8,0 Z" Fill="{StaticResource TextBrush}" />
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+
+        <!-- The "Story window" selector and any other ComboBox. -->
+        <Style TargetType="ComboBox">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Background" Value="{StaticResource CardBackground}" />
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton Template="{StaticResource ThemedComboToggle}"
+                                          Focusable="False" ClickMode="Press"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" />
+                            <ContentPresenter x:Name="ContentSite" IsHitTestVisible="False"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                              Margin="8,2,24,2" VerticalAlignment="Center" HorizontalAlignment="Left"
+                                              TextElement.Foreground="{StaticResource TextBrush}" />
+                            <Popup x:Name="Popup" Placement="Bottom" Focusable="False"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   AllowsTransparency="True" PopupAnimation="Slide">
+                                <Border x:Name="DropDownBorder" Background="{StaticResource PanelBackground}"
+                                        BorderBrush="#FF3A3D44" BorderThickness="1" CornerRadius="3"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                        MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <ScrollViewer>
+                                        <StackPanel IsItemsHost="True"
+                                                    KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Individual drop-down rows (e.g. "±15 min"). -->
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter TextElement.Foreground="{StaticResource TextBrush}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ============================================================
+             Dark drop-down calendar for the From/To date pickers. WPF's stock
+             Calendar popup is white; these styles retemplate the day buttons,
+             month/year buttons and the calendar container so the popup matches
+             the dark theme. CalendarDayButton / CalendarButton are picked up as
+             implicit styles by the Calendar the DatePicker hosts.
+             ============================================================ -->
+
+        <!-- A single day cell. -->
+        <Style TargetType="CalendarDayButton">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="MinWidth" Value="26" />
+            <Setter Property="MinHeight" Value="26" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CalendarDayButton">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderThickness="1" BorderBrush="Transparent" CornerRadius="3" Margin="1">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextElement.Foreground="{StaticResource TextBrush}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FF34373E" />
+                            </Trigger>
+                            <Trigger Property="IsToday" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- A month or year selection cell (the decade/year views). -->
+        <Style TargetType="CalendarButton">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="MinWidth" Value="42" />
+            <Setter Property="MinHeight" Value="42" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CalendarButton">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderThickness="1" BorderBrush="Transparent" CornerRadius="3" Margin="2">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextElement.Foreground="{StaticResource TextBrush}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FF34373E" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- The calendar container: header (prev / title / next) + month and year grids.
+             The PART_* names are required by the Calendar control. -->
+        <Style TargetType="CalendarItem">
+            <Setter Property="Background" Value="{StaticResource PanelBackground}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CalendarItem">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="#FF3A3D44"
+                                BorderThickness="1" CornerRadius="4" Padding="4">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Button x:Name="PART_PreviousButton" Grid.Column="0" Width="22" Height="22"
+                                            Content="◄" Foreground="{StaticResource TextBrush}"
+                                            Background="Transparent" BorderThickness="0" Cursor="Hand" />
+                                    <Button x:Name="PART_HeaderButton" Grid.Column="1" FontWeight="SemiBold"
+                                            Foreground="{StaticResource TextBrush}"
+                                            Background="Transparent" BorderThickness="0" Cursor="Hand" />
+                                    <Button x:Name="PART_NextButton" Grid.Column="2" Width="22" Height="22"
+                                            Content="►" Foreground="{StaticResource TextBrush}"
+                                            Background="Transparent" BorderThickness="0" Cursor="Hand" />
+                                </Grid>
+                                <Grid x:Name="PART_MonthView" Grid.Row="1" Margin="0,4,0,0" Visibility="Visible">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" /><ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" /><ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" /><ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" /><RowDefinition Height="*" />
+                                        <RowDefinition Height="*" /><RowDefinition Height="*" />
+                                        <RowDefinition Height="*" /><RowDefinition Height="*" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                </Grid>
+                                <Grid x:Name="PART_YearView" Grid.Row="1" Margin="0,4,0,0" Visibility="Hidden">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" /><ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" /><ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*" /><RowDefinition Height="*" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="Calendar">
+            <Setter Property="Background" Value="{StaticResource PanelBackground}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="#FF3A3D44" />
+        </Style>
+
+        <!-- ============================================================
+             Tooltip: dark, wrapping description box shown on hover. Used to
+             explain what each filter field / quick-filter / menu option does.
+             ============================================================ -->
+        <Style TargetType="ToolTip">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="MaxWidth" Value="340" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToolTip">
+                        <Border Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource AccentBrush}"
+                                BorderThickness="1" CornerRadius="4" Padding="9,6">
+                            <TextBlock Text="{TemplateBinding Content}" TextWrapping="Wrap"
+                                       Foreground="{StaticResource TextBrush}" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ============================================================
+             IOC row highlight. DataGrid.RowBackground / AlternatingRowBackground
+             are applied as LOCAL values on each row and outrank a row-style
+             DataTrigger, so tinting the row Background never showed. Tinting the
+             *cell* background wins instead (cells are transparent by default), so
+             this is the reliable way to flag IOC rows in every grid.
+             ============================================================ -->
+        <Style x:Key="IocCellStyle" TargetType="DataGridCell">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsIoc}" Value="True">
+                    <Setter Property="Background" Value="{StaticResource IocBrush}" />
+                    <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- ============================================================
+             Dark context menu. WPF's default ContextMenu / MenuItem render on a
+             near-white chrome, so the right-click "Show Logon Story" item was
+             unreadable. These bring it into the dark theme.
+             ============================================================ -->
+        <Style TargetType="ContextMenu">
+            <Setter Property="Background" Value="{StaticResource PanelBackground}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="#FF3A3D44" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+
+        <Style TargetType="MenuItem">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="10,5" CornerRadius="3">
+                            <ContentPresenter ContentSource="Header"
+                                              TextElement.Foreground="{StaticResource TextBrush}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Application.Resources>
+</Application>

@@ -1,0 +1,572 @@
+<Window x:Class="LoginActivityTriage.App.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:LoginActivityTriage.App.ViewModels"
+        Title="Login Activity Triage GUI" Height="820" Width="1320"
+        Background="{StaticResource AppBackground}"
+        WindowStartupLocation="CenterScreen">
+
+    <Window.Resources>
+        <!-- Timeline grid row colouring: failures red-ish, privileged amber-ish. -->
+        <Style x:Key="EventRowStyle" TargetType="DataGridRow">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsFailure}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource FailBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsPrivileged}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource PrivBrush}" />
+                </DataTrigger>
+                <!-- IOC match wins the row background so it stands out in every grid. -->
+                <DataTrigger Binding="{Binding IsIoc}" Value="True">
+                    <Setter Property="Background" Value="{StaticResource IocBrush}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Row style for the pivot grids (no failure/privileged text colouring, just IOC flag). -->
+        <Style x:Key="PivotRowStyle" TargetType="DataGridRow">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsIoc}" Value="True">
+                    <Setter Property="Background" Value="{StaticResource IocBrush}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="ToolButton" TargetType="Button">
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="Margin" Value="3,0" />
+            <Setter Property="Background" Value="{StaticResource PanelBackground}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="#FF3A3D44" />
+        </Style>
+
+        <Style x:Key="QuickButton" TargetType="Button" BasedOn="{StaticResource ToolButton}">
+            <Setter Property="Margin" Value="2" />
+            <Setter Property="FontSize" Value="11" />
+        </Style>
+    </Window.Resources>
+
+    <DockPanel LastChildFill="True">
+
+        <!-- Toolbar -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource PanelBackground}" Padding="8">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                    <Button Content="New / Open Case" Style="{StaticResource ToolButton}"
+                            Command="{Binding NewCaseCommand}"
+                            ToolTip="Choose a .latdb case file. If it already exists you'll be asked whether to open it (restoring events &amp; IOCs) or overwrite it with a new case." />
+                    <Button Content="Import EVTX Folder…" Style="{StaticResource ToolButton}"
+                            Command="{Binding ImportFolderCommand}" IsEnabled="{Binding IsNotBusy}"
+                            ToolTip="Recursively discover and import every .evtx file under a chosen folder, normalising logon-related events." />
+                    <Separator Margin="6,0" />
+                    <Button Content="Export CSV" Style="{StaticResource ToolButton}"
+                            Command="{Binding ExportCsvCommand}"
+                            ToolTip="Export the current (filtered) Logon Timeline rows to a CSV file." />
+                    <Button Content="Export HTML" Style="{StaticResource ToolButton}"
+                            Command="{Binding ExportHtmlCommand}"
+                            ToolTip="Export the current (filtered) Logon Timeline rows to a styled HTML report." />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
+                    <TextBlock Text="Story window:" VerticalAlignment="Center" Margin="0,0,6,0"
+                               Foreground="{StaticResource MutedTextBrush}" />
+                    <ComboBox Width="90" SelectedValuePath="Tag"
+                              SelectedValue="{Binding StoryWindowMinutes, Mode=TwoWay}"
+                              ToolTip="Time window (± minutes around a selected event) used when building a Logon Story.">
+                        <ComboBoxItem Content="±15 min" Tag="15"
+                                      ToolTip="Show events within 15 minutes before and after the selected (anchor) event." />
+                        <ComboBoxItem Content="±30 min" Tag="30" IsSelected="True"
+                                      ToolTip="Show events within 30 minutes before and after the selected (anchor) event." />
+                        <ComboBoxItem Content="±60 min" Tag="60"
+                                      ToolTip="Show events within 60 minutes before and after the selected (anchor) event." />
+                    </ComboBox>
+                </StackPanel>
+                <TextBlock Text="{Binding CaseName, StringFormat=Case: {0}}" VerticalAlignment="Center"
+                           HorizontalAlignment="Center" FontWeight="SemiBold" />
+            </DockPanel>
+        </Border>
+
+        <!-- Global filter bar: applies to the Logon Timeline regardless of the active tab.
+             Collapsible (Expander) so it can be tucked away to reclaim vertical space. -->
+        <Expander DockPanel.Dock="Top" IsExpanded="True" Margin="4,4,4,0"
+                  Background="{StaticResource PanelBackground}" Foreground="{StaticResource TextBrush}"
+                  Header="Filters — apply to the Logon Timeline"
+                  ToolTip="Filter the Logon Timeline by user, host, source IP, event attributes and a date/time range, then click Apply Filter.">
+            <Border Background="{StaticResource PanelBackground}" Padding="8">
+                <StackPanel>
+                    <WrapPanel>
+                        <StackPanel Margin="4"><TextBlock Text="User" Style="{StaticResource CardLabel}" />
+                            <TextBox Width="130" Text="{Binding FilterUser, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Match events whose target user name contains this text (case-insensitive substring)." /></StackPanel>
+                        <StackPanel Margin="4"><TextBlock Text="Host" Style="{StaticResource CardLabel}" />
+                            <TextBox Width="130" Text="{Binding FilterHost, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Match events recorded on hosts whose name contains this text (the computer the log came from)." /></StackPanel>
+                        <StackPanel Margin="4"><TextBlock Text="Source IP" Style="{StaticResource CardLabel}" />
+                            <TextBox Width="130" Text="{Binding FilterSourceIp, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Match events whose source / remote IP address contains this text (e.g. 10.0 or a full address)." /></StackPanel>
+                        <StackPanel Margin="4"><TextBlock Text="Event ID" Style="{StaticResource CardLabel}" />
+                            <TextBox Width="80" Text="{Binding FilterEventId, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Match a specific Windows Event ID (e.g. 4624 success, 4625 failure, 4648 explicit credentials)." /></StackPanel>
+                        <StackPanel Margin="4"><TextBlock Text="Logon Type" Style="{StaticResource CardLabel}" />
+                            <TextBox Width="80" Text="{Binding FilterLogonType, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Match a logon type number (2 interactive, 3 network, 10 RemoteInteractive/RDP, ...)." /></StackPanel>
+                        <StackPanel Margin="4"><TextBlock Text="Auth Pkg" Style="{StaticResource CardLabel}" />
+                            <TextBox Width="100" Text="{Binding FilterAuthPackage, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Match the authentication package, e.g. NTLM, Kerberos or Negotiate." /></StackPanel>
+                        <StackPanel Margin="4"><TextBlock Text="From (date)" Style="{StaticResource CardLabel}" />
+                            <DatePicker Width="120" SelectedDate="{Binding FilterFrom}"
+                                        ToolTip="Start of the date range. Events before this date are hidden." /></StackPanel>
+                        <StackPanel Margin="4"><TextBlock Text="From (time)" Style="{StaticResource CardLabel}" />
+                            <TextBox Width="90" Text="{Binding FilterFromTime, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Optional start time of day as HH:mm or HH:mm:ss (e.g. 08:30). Blank = from the start of the day." /></StackPanel>
+                        <StackPanel Margin="4"><TextBlock Text="To (date)" Style="{StaticResource CardLabel}" />
+                            <DatePicker Width="120" SelectedDate="{Binding FilterTo}"
+                                        ToolTip="End of the date range. With a blank time the whole day is included." /></StackPanel>
+                        <StackPanel Margin="4"><TextBlock Text="To (time)" Style="{StaticResource CardLabel}" />
+                            <TextBox Width="90" Text="{Binding FilterToTime, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Optional end time of day as HH:mm or HH:mm:ss (e.g. 17:00). Blank = through the end of the day." /></StackPanel>
+                    </WrapPanel>
+                    <WrapPanel Margin="4,4,4,0">
+                        <CheckBox Content="Success only" Margin="4" Foreground="{StaticResource TextBrush}" IsChecked="{Binding SuccessOnly}"
+                                  ToolTip="Show only successful logons (event 4624)." />
+                        <CheckBox Content="Failure only" Margin="4" Foreground="{StaticResource TextBrush}" IsChecked="{Binding FailureOnly}"
+                                  ToolTip="Show only failed logons (event 4625)." />
+                        <CheckBox Content="Privileged only" Margin="4" Foreground="{StaticResource TextBrush}" IsChecked="{Binding PrivilegedOnly}"
+                                  ToolTip="Show only privileged / special-privilege logons (admin-equivalent tokens)." />
+                        <CheckBox Content="RDP only" Margin="4" Foreground="{StaticResource TextBrush}" IsChecked="{Binding RdpOnly}"
+                                  ToolTip="Show only RDP / RemoteInteractive logon activity." />
+                        <CheckBox Content="Exclude machine accounts" Margin="4" Foreground="{StaticResource TextBrush}" IsChecked="{Binding ExcludeMachineAccounts}"
+                                  ToolTip="Hide computer/machine accounts (user names ending in $)." />
+                        <CheckBox Content="Exclude localhost/blank src" Margin="4" Foreground="{StaticResource TextBrush}" IsChecked="{Binding ExcludeLocalBlank}"
+                                  ToolTip="Hide events with no source IP or a loopback/local source address." />
+                        <CheckBox Content="IOC matches only" Margin="4" Foreground="{StaticResource IocAccentBrush}" FontWeight="SemiBold" IsChecked="{Binding IocOnly}"
+                                  ToolTip="Restrict every view to events that match an indicator loaded on the IOCs tab." />
+                        <Button Content="Apply Filter" Style="{StaticResource ToolButton}" Command="{Binding ApplyFilterCommand}"
+                                ToolTip="Apply the filter fields above to the Logon Timeline." />
+                        <Button Content="Clear" Style="{StaticResource ToolButton}" Command="{Binding ClearFilterCommand}"
+                                ToolTip="Reset every filter field and show all imported events." />
+                    </WrapPanel>
+                    <WrapPanel Margin="4,6,4,0">
+                        <TextBlock Text="Quick:" VerticalAlignment="Center" Margin="2,0,4,0" Foreground="{StaticResource MutedTextBrush}" />
+                        <Button Content="RDP Logons" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="RDP"
+                                ToolTip="One click: show only RDP / RemoteInteractive logons (logon type 10)." />
+                        <Button Content="Failures" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="Failures"
+                                ToolTip="One click: show only failed logons (event 4625)." />
+                        <Button Content="Privileged" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="Privileged"
+                                ToolTip="One click: show only privileged logons." />
+                        <Button Content="Explicit Creds" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="Explicit"
+                                ToolTip="One click: show explicit-credential use (event 4648 — runas / credential override)." />
+                        <Button Content="NTLM" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="NTLM"
+                                ToolTip="One click: show events authenticated with the NTLM package." />
+                        <Button Content="Kerberos Fail" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="KerberosFail"
+                                ToolTip="One click: show Kerberos pre-authentication failures (event 4771)." />
+                        <Button Content="Service Installed" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="ServiceInstalled"
+                                ToolTip="One click: show new service installations (event 7045)." />
+                        <Button Content="Account Created" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="AccountCreated"
+                                ToolTip="One click: show new user-account creations (event 4720)." />
+                        <Button Content="Logon Type 3" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="LogonType3"
+                                ToolTip="One click: show network logons (logon type 3)." />
+                        <Button Content="Logon Type 10" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="LogonType10"
+                                ToolTip="One click: show RemoteInteractive / RDP logons (logon type 10)." />
+                        <Button Content="Exclude Machine Accts" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="ExcludeMachine"
+                                ToolTip="One click: hide computer/machine accounts (names ending in $)." />
+                        <Button Content="IOC Matches" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="Iocs"
+                                Foreground="{StaticResource IocAccentBrush}"
+                                ToolTip="One click: show only events that match a loaded IOC (host / IP / user)." />
+                    </WrapPanel>
+                </StackPanel>
+            </Border>
+        </Expander>
+
+        <!-- Status bar + progress -->
+        <Border DockPanel.Dock="Bottom" Background="{StaticResource PanelBackground}" Padding="8,4">
+            <DockPanel>
+                <ProgressBar DockPanel.Dock="Right" Width="240" Height="14"
+                             Minimum="0" Maximum="{Binding ProgressMax}" Value="{Binding ProgressValue}"
+                             Visibility="{Binding IsBusy, Converter={x:Static vm:VisibilityHelper.BoolToVisible}}" />
+                <TextBlock Text="{Binding StatusText}" Foreground="{StaticResource MutedTextBrush}"
+                           VerticalAlignment="Center" />
+            </DockPanel>
+        </Border>
+
+        <!-- Main tabs -->
+        <TabControl Background="{StaticResource AppBackground}" BorderThickness="0" Margin="4">
+
+            <!-- Dashboard -->
+            <TabItem Header="Dashboard"
+                     ToolTip="At-a-glance counts and top users / IPs / hosts for the current filtered view.">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="6">
+                        <WrapPanel>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding TotalEvents}" Style="{StaticResource CardValue}" />
+                                    <TextBlock Text="Total events" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding SuccessfulLogons}" Style="{StaticResource CardValue}" />
+                                    <TextBlock Text="Successful logons" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding FailedLogons}" Style="{StaticResource CardValue}" Foreground="{StaticResource FailBrush}" />
+                                    <TextBlock Text="Failed logons" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding RdpLogons}" Style="{StaticResource CardValue}" />
+                                    <TextBlock Text="RDP logons" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding ExplicitCredentialUse}" Style="{StaticResource CardValue}" />
+                                    <TextBlock Text="Explicit credentials" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding PrivilegedLogons}" Style="{StaticResource CardValue}" Foreground="{StaticResource PrivBrush}" />
+                                    <TextBlock Text="Privileged logons" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding UniqueUsers}" Style="{StaticResource CardValue}" />
+                                    <TextBlock Text="Unique users" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding UniqueSourceIps}" Style="{StaticResource CardValue}" />
+                                    <TextBlock Text="Unique source IPs" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding UniqueHosts}" Style="{StaticResource CardValue}" />
+                                    <TextBlock Text="Unique hosts" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding SuspiciousCount}" Style="{StaticResource CardValue}" Foreground="{StaticResource FailBrush}" />
+                                    <TextBlock Text="Suspicious sequences" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                        </WrapPanel>
+
+                        <WrapPanel>
+                            <StackPanel Width="300" Margin="6">
+                                <TextBlock Text="Top users (successful)" Style="{StaticResource SectionHeader}" />
+                                <ListView ItemsSource="{Binding TopUsersSuccess}" Height="200" Background="{StaticResource CardBackground}" BorderThickness="0">
+                                    <ListView.View><GridView>
+                                        <GridViewColumn Header="User" Width="200" DisplayMemberBinding="{Binding Label}" />
+                                        <GridViewColumn Header="Count" Width="70" DisplayMemberBinding="{Binding Count}" />
+                                    </GridView></ListView.View></ListView>
+                            </StackPanel>
+                            <StackPanel Width="300" Margin="6">
+                                <TextBlock Text="Top users (failed)" Style="{StaticResource SectionHeader}" />
+                                <ListView ItemsSource="{Binding TopUsersFailed}" Height="200" Background="{StaticResource CardBackground}" BorderThickness="0">
+                                    <ListView.View><GridView>
+                                        <GridViewColumn Header="User" Width="200" DisplayMemberBinding="{Binding Label}" />
+                                        <GridViewColumn Header="Count" Width="70" DisplayMemberBinding="{Binding Count}" />
+                                    </GridView></ListView.View></ListView>
+                            </StackPanel>
+                            <StackPanel Width="300" Margin="6">
+                                <TextBlock Text="Top source IPs" Style="{StaticResource SectionHeader}" />
+                                <ListView ItemsSource="{Binding TopSourceIps}" Height="200" Background="{StaticResource CardBackground}" BorderThickness="0">
+                                    <ListView.View><GridView>
+                                        <GridViewColumn Header="Source IP" Width="200" DisplayMemberBinding="{Binding Label}" />
+                                        <GridViewColumn Header="Count" Width="70" DisplayMemberBinding="{Binding Count}" />
+                                    </GridView></ListView.View></ListView>
+                            </StackPanel>
+                            <StackPanel Width="300" Margin="6">
+                                <TextBlock Text="Top destination hosts" Style="{StaticResource SectionHeader}" />
+                                <ListView ItemsSource="{Binding TopHosts}" Height="200" Background="{StaticResource CardBackground}" BorderThickness="0">
+                                    <ListView.View><GridView>
+                                        <GridViewColumn Header="Host" Width="200" DisplayMemberBinding="{Binding Label}" />
+                                        <GridViewColumn Header="Count" Width="70" DisplayMemberBinding="{Binding Count}" />
+                                    </GridView></ListView.View></ListView>
+                            </StackPanel>
+                            <StackPanel Width="300" Margin="6">
+                                <TextBlock Text="Top privileged users" Style="{StaticResource SectionHeader}" />
+                                <ListView ItemsSource="{Binding TopPrivilegedUsers}" Height="200" Background="{StaticResource CardBackground}" BorderThickness="0">
+                                    <ListView.View><GridView>
+                                        <GridViewColumn Header="User" Width="200" DisplayMemberBinding="{Binding Label}" />
+                                        <GridViewColumn Header="Count" Width="70" DisplayMemberBinding="{Binding Count}" />
+                                    </GridView></ListView.View></ListView>
+                            </StackPanel>
+                            <StackPanel Width="300" Margin="6">
+                                <TextBlock Text="Top RDP source IPs" Style="{StaticResource SectionHeader}" />
+                                <ListView ItemsSource="{Binding TopRdpSourceIps}" Height="200" Background="{StaticResource CardBackground}" BorderThickness="0">
+                                    <ListView.View><GridView>
+                                        <GridViewColumn Header="Source IP" Width="200" DisplayMemberBinding="{Binding Label}" />
+                                        <GridViewColumn Header="Count" Width="70" DisplayMemberBinding="{Binding Count}" />
+                                    </GridView></ListView.View></ListView>
+                            </StackPanel>
+                        </WrapPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- Logon Timeline -->
+            <TabItem Header="Logon Timeline"
+                     ToolTip="Full chronological logon event timeline, driven by the filter bar above. Right-click a row for its Logon Story.">
+                <DataGrid ItemsSource="{Binding Events}" SelectedItem="{Binding SelectedEvent}"
+                              AutoGenerateColumns="False" IsReadOnly="True"
+                              EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                              VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                              GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                              Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}"
+                              RowBackground="{StaticResource CardBackground}" AlternatingRowBackground="#FF33363D"
+                              RowStyle="{StaticResource EventRowStyle}" CellStyle="{StaticResource IocCellStyle}" SelectionMode="Extended" ClipboardCopyMode="IncludeHeader">
+                        <DataGrid.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Show Logon Story"
+                                          Command="{Binding ShowLogonStoryCommand}"
+                                          CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          ToolTip="Open the Logon Story: a ±window timeline of all events around the selected row, so you can see what happened just before and after." />
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                            <DataGridTextColumn Header="Hostname" Binding="{Binding Hostname}" Width="120" />
+                            <DataGridTextColumn Header="Event ID" Binding="{Binding EventId}" Width="70" />
+                            <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}" Width="160" />
+                            <DataGridTextColumn Header="User" Binding="{Binding TargetUserName}" Width="130" />
+                            <DataGridTextColumn Header="Domain" Binding="{Binding TargetDomain}" Width="100" />
+                            <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="120" />
+                            <DataGridTextColumn Header="Workstation" Binding="{Binding WorkstationName}" Width="110" />
+                            <DataGridTextColumn Header="Logon Type" Binding="{Binding LogonType}" Width="80" />
+                            <DataGridTextColumn Header="Logon Type Description" Binding="{Binding LogonTypeDescription}" Width="160" />
+                            <DataGridTextColumn Header="Auth Package" Binding="{Binding AuthenticationPackage}" Width="110" />
+                            <DataGridTextColumn Header="Elevated" Binding="{Binding ElevatedToken, Converter={StaticResource ElevatedToText}}" Width="70" />
+                            <DataGridTextColumn Header="Process" Binding="{Binding ProcessName}" Width="160" />
+                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="100" />
+                            <DataGridTextColumn Header="Failure Reason" Binding="{Binding FailureReason}" Width="170" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+            </TabItem>
+
+            <!-- RDP Activity -->
+            <TabItem Header="RDP Activity"
+                     ToolTip="Remote Desktop activity only (logon type 10 and TerminalServices events), within the current filter.">
+                <DataGrid ItemsSource="{Binding RdpEvents}" SelectedItem="{Binding SelectedEvent}"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True"
+                          GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                          Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}"
+                          RowBackground="{StaticResource CardBackground}" AlternatingRowBackground="#FF33363D"
+                          RowStyle="{StaticResource EventRowStyle}" CellStyle="{StaticResource IocCellStyle}" ClipboardCopyMode="IncludeHeader">
+                    <DataGrid.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Show Logon Story" Command="{Binding ShowLogonStoryCommand}"
+                                      CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                      ToolTip="Open the Logon Story: a ±window timeline of all events around the selected row, so you can see what happened just before and after." />
+                        </ContextMenu>
+                    </DataGrid.ContextMenu>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Host" Binding="{Binding Hostname}" Width="130" />
+                        <DataGridTextColumn Header="Event ID" Binding="{Binding EventId}" Width="70" />
+                        <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}" Width="190" />
+                        <DataGridTextColumn Header="User" Binding="{Binding TargetUserName}" Width="140" />
+                        <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="130" />
+                        <DataGridTextColumn Header="Logon Type" Binding="{Binding LogonTypeDescription}" Width="160" />
+                        <DataGridTextColumn Header="Log Source" Binding="{Binding LogSource}" Width="150" />
+                        <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+
+            <!-- Failed Logons -->
+            <TabItem Header="Failed Logons"
+                     ToolTip="Failed authentication events (4625 and related) with failure reasons, within the current filter.">
+                <DataGrid ItemsSource="{Binding FailedEvents}" SelectedItem="{Binding SelectedEvent}"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True"
+                          GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                          Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}"
+                          RowBackground="{StaticResource CardBackground}" AlternatingRowBackground="#FF33363D"
+                          RowStyle="{StaticResource EventRowStyle}" CellStyle="{StaticResource IocCellStyle}" ClipboardCopyMode="IncludeHeader">
+                    <DataGrid.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Show Logon Story" Command="{Binding ShowLogonStoryCommand}"
+                                      CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                      ToolTip="Open the Logon Story: a ±window timeline of all events around the selected row, so you can see what happened just before and after." />
+                        </ContextMenu>
+                    </DataGrid.ContextMenu>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Host" Binding="{Binding Hostname}" Width="130" />
+                        <DataGridTextColumn Header="Event ID" Binding="{Binding EventId}" Width="70" />
+                        <DataGridTextColumn Header="User" Binding="{Binding TargetUserName}" Width="150" />
+                        <DataGridTextColumn Header="Domain" Binding="{Binding TargetDomain}" Width="110" />
+                        <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="130" />
+                        <DataGridTextColumn Header="Logon Type" Binding="{Binding LogonTypeDescription}" Width="150" />
+                        <DataGridTextColumn Header="Auth Package" Binding="{Binding AuthenticationPackage}" Width="120" />
+                        <DataGridTextColumn Header="Failure Reason" Binding="{Binding FailureReason}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+
+            <!-- Admin Usage -->
+            <TabItem Header="Admin Usage"
+                     ToolTip="Privileged / elevated logons and explicit-credential use (4648), within the current filter.">
+                <DataGrid ItemsSource="{Binding AdminEvents}" SelectedItem="{Binding SelectedEvent}"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True"
+                          GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                          Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}"
+                          RowBackground="{StaticResource CardBackground}" AlternatingRowBackground="#FF33363D"
+                          RowStyle="{StaticResource EventRowStyle}" CellStyle="{StaticResource IocCellStyle}" ClipboardCopyMode="IncludeHeader">
+                    <DataGrid.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Show Logon Story" Command="{Binding ShowLogonStoryCommand}"
+                                      CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                      ToolTip="Open the Logon Story: a ±window timeline of all events around the selected row, so you can see what happened just before and after." />
+                        </ContextMenu>
+                    </DataGrid.ContextMenu>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Host" Binding="{Binding Hostname}" Width="130" />
+                        <DataGridTextColumn Header="Event ID" Binding="{Binding EventId}" Width="70" />
+                        <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}" Width="190" />
+                        <DataGridTextColumn Header="User" Binding="{Binding TargetUserName}" Width="150" />
+                        <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="130" />
+                        <DataGridTextColumn Header="Elevated" Binding="{Binding ElevatedToken, Converter={StaticResource ElevatedToText}}" Width="80" />
+                        <DataGridTextColumn Header="Target Server" Binding="{Binding TargetServer}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+
+            <!-- Source IP Pivot -->
+            <TabItem Header="Source IP Pivot"
+                     ToolTip="Per-source-IP rollup: first/last seen, unique users &amp; hosts, success/fail counts and a suspicion score.">
+                <DataGrid ItemsSource="{Binding SourceIpPivots}" AutoGenerateColumns="False" IsReadOnly="True"
+                          EnableRowVirtualization="True" GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                          Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}"
+                          RowBackground="{StaticResource CardBackground}" AlternatingRowBackground="#FF33363D"
+                          RowStyle="{StaticResource PivotRowStyle}" CellStyle="{StaticResource IocCellStyle}" ClipboardCopyMode="IncludeHeader">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="150" />
+                        <DataGridTextColumn Header="First Seen" Binding="{Binding FirstSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Last Seen" Binding="{Binding LastSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Users" Binding="{Binding UniqueUsers}" Width="70" />
+                        <DataGridTextColumn Header="Hosts" Binding="{Binding UniqueHosts}" Width="70" />
+                        <DataGridTextColumn Header="Success" Binding="{Binding Successful}" Width="80" />
+                        <DataGridTextColumn Header="Failed" Binding="{Binding Failed}" Width="70" />
+                        <DataGridTextColumn Header="RDP" Binding="{Binding Rdp}" Width="60" />
+                        <DataGridTextColumn Header="Explicit" Binding="{Binding Explicit}" Width="70" />
+                        <DataGridTextColumn Header="Privileged" Binding="{Binding Privileged}" Width="80" />
+                        <DataGridTextColumn Header="Suspicion" Binding="{Binding SuspicionScore}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+
+            <!-- User Pivot -->
+            <TabItem Header="User Pivot"
+                     ToolTip="Per-user rollup: first/last seen, distinct hosts &amp; source IPs, success/fail counts and a suspicion score.">
+                <DataGrid ItemsSource="{Binding UserPivots}" AutoGenerateColumns="False" IsReadOnly="True"
+                          EnableRowVirtualization="True" GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                          Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}"
+                          RowBackground="{StaticResource CardBackground}" AlternatingRowBackground="#FF33363D"
+                          RowStyle="{StaticResource PivotRowStyle}" CellStyle="{StaticResource IocCellStyle}" ClipboardCopyMode="IncludeHeader">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="User" Binding="{Binding User}" Width="160" />
+                        <DataGridTextColumn Header="First Seen" Binding="{Binding FirstSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Last Seen" Binding="{Binding LastSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Hosts" Binding="{Binding Hosts}" Width="70" />
+                        <DataGridTextColumn Header="Source IPs" Binding="{Binding SourceIps}" Width="90" />
+                        <DataGridTextColumn Header="Success" Binding="{Binding Successful}" Width="80" />
+                        <DataGridTextColumn Header="Failed" Binding="{Binding Failed}" Width="70" />
+                        <DataGridTextColumn Header="RDP" Binding="{Binding Rdp}" Width="60" />
+                        <DataGridTextColumn Header="Explicit" Binding="{Binding Explicit}" Width="70" />
+                        <DataGridTextColumn Header="Privileged" Binding="{Binding Privileged}" Width="80" />
+                        <DataGridTextColumn Header="Suspicion" Binding="{Binding SuspicionScore}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+
+            <!-- Host Pivot -->
+            <TabItem Header="Host Pivot"
+                     ToolTip="Per-destination-host rollup: first/last seen, distinct users &amp; source IPs and success/fail counts.">
+                <DataGrid ItemsSource="{Binding HostPivots}" AutoGenerateColumns="False" IsReadOnly="True"
+                          EnableRowVirtualization="True" GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                          Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}"
+                          RowBackground="{StaticResource CardBackground}" AlternatingRowBackground="#FF33363D"
+                          RowStyle="{StaticResource PivotRowStyle}" CellStyle="{StaticResource IocCellStyle}" ClipboardCopyMode="IncludeHeader">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Host" Binding="{Binding Host}" Width="170" />
+                        <DataGridTextColumn Header="First Seen" Binding="{Binding FirstSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Last Seen" Binding="{Binding LastSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Users" Binding="{Binding Users}" Width="80" />
+                        <DataGridTextColumn Header="Source IPs" Binding="{Binding SourceIps}" Width="90" />
+                        <DataGridTextColumn Header="Success" Binding="{Binding Successful}" Width="80" />
+                        <DataGridTextColumn Header="Failed" Binding="{Binding Failed}" Width="70" />
+                        <DataGridTextColumn Header="RDP" Binding="{Binding Rdp}" Width="60" />
+                        <DataGridTextColumn Header="Privileged" Binding="{Binding Privileged}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+
+            <!-- Suspicious Sequences -->
+            <TabItem Header="Suspicious Sequences"
+                     ToolTip="Analytics findings (e.g. failed-then-success, password spray) ranked by severity. Computed over all events in the case.">
+                <DataGrid ItemsSource="{Binding Findings}" AutoGenerateColumns="False" IsReadOnly="True"
+                          Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}"
+                          RowBackground="{StaticResource CardBackground}" AlternatingRowBackground="#FF33363D"
+                          GridLinesVisibility="Horizontal" HeadersVisibility="Column">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="80" />
+                        <DataGridTextColumn Header="Rule" Binding="{Binding RuleName}" Width="220" />
+                        <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="User" Binding="{Binding User}" Width="130" />
+                        <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="120" />
+                        <DataGridTextColumn Header="Host" Binding="{Binding Host}" Width="120" />
+                        <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="280" />
+                        <DataGridTextColumn Header="Related" Binding="{Binding RelatedEventIds}" Width="100" />
+                        <DataGridTextColumn Header="Reasoning" Binding="{Binding Reasoning}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+
+            <!-- IOCs -->
+            <TabItem Header="IOCs"
+                     ToolTip="Paste hostnames, IPs and usernames to flag (and optionally filter) matching rows across every view. Saved with the case.">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10">
+                        <TextBlock Text="Indicators of Compromise" Style="{StaticResource SectionHeader}" />
+                        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" Margin="6,0,6,8"
+                                   Text="Paste indicators below — one per line, or comma/space separated. After clicking Apply IOCs, matching rows are tinted in every data view (Timeline, RDP, Failed, Admin, Story and the pivots). Use the &quot;IOC matches only&quot; filter (or the IOC Matches quick button) to restrict all views to matches." />
+
+                        <WrapPanel>
+                            <StackPanel Margin="6" Width="340">
+                                <TextBlock Text="Hostnames" Style="{StaticResource CardLabel}" />
+                                <TextBox Height="180" AcceptsReturn="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto" FontFamily="Consolas"
+                                         Text="{Binding IocHosts, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="One hostname per line. Short names also match FQDNs (PC01 flags PC01.contoso.local)." />
+                            </StackPanel>
+                            <StackPanel Margin="6" Width="340">
+                                <TextBlock Text="IP addresses" Style="{StaticResource CardLabel}" />
+                                <TextBox Height="180" AcceptsReturn="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto" FontFamily="Consolas"
+                                         Text="{Binding IocIps, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="One IP address per line. IPs are matched exactly." />
+                            </StackPanel>
+                            <StackPanel Margin="6" Width="340">
+                                <TextBlock Text="Usernames" Style="{StaticResource CardLabel}" />
+                                <TextBox Height="180" AcceptsReturn="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto" FontFamily="Consolas"
+                                         Text="{Binding IocUsers, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="One username per line. Bare names also match DOMAIN\user forms." />
+                            </StackPanel>
+                        </WrapPanel>
+
+                        <WrapPanel Margin="6,8,6,0">
+                            <Button Content="Apply IOCs" Style="{StaticResource ToolButton}" Command="{Binding ApplyIocsCommand}"
+                                    ToolTip="Parse the lists above, flag every matching event and repaint all views." />
+                            <Button Content="Clear IOCs" Style="{StaticResource ToolButton}" Command="{Binding ClearIocsCommand}"
+                                    ToolTip="Remove all loaded indicators and turn off the IOC-only filter." />
+                            <Border Background="{StaticResource IocBrush}" CornerRadius="3" Padding="10,2" Margin="10,0,0,0" VerticalAlignment="Center">
+                                <TextBlock Text="Example IOC-matched row" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                            </Border>
+                        </WrapPanel>
+
+                        <TextBlock Text="{Binding IocSummary}" Margin="6,10,6,0" TextWrapping="Wrap"
+                                   Foreground="{StaticResource IocAccentBrush}" FontWeight="SemiBold" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- Import Log -->
+            <TabItem Header="Import Log"
+                     ToolTip="Per-file import results: parse errors and skipped files from the last EVTX import.">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="Errors and skipped files" Style="{StaticResource SectionHeader}" />
+                    <ListBox ItemsSource="{Binding ErrorLog}" Background="{StaticResource CardBackground}"
+                             Foreground="{StaticResource FailBrush}" BorderThickness="0" />
+                </DockPanel>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>
