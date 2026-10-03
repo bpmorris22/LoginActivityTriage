@@ -12,9 +12,11 @@ Three front ends share one parsing and detection core:
 | **`LoginActivityTriageCli.exe`** | The engine. Headless EVTX → CSV + JSON. Scriptable; driven by the HTA. |
 | `LoginActivityTriage.exe` (WPF) | Case-database workflow (SQLite `.latdb`, bookmarks / IOCs persisted per case). |
 
-**Manual:** [`docs/manual.html`](docs/manual.html) — download or clone the repository and open it in a
-browser (GitHub shows HTML files as source). Screenshots there and below show a fictional
-incident; every name and address is invented.
+**Manual:** <https://bpmorris22.github.io/LoginActivityTriage/manual.html> (source in
+[`docs/manual.html`](docs/manual.html); it also ships in the release bundle and opens from the
+HTA's Help). **Download:** [latest release](https://github.com/bpmorris22/LoginActivityTriage/releases/latest)
+— `LoginActivityTriage.hta`, `LoginActivityTriageCli.exe` and a bundle zip. Screenshots there and
+below show a fictional incident; every name and address is invented.
 
 ![Overview and findings of a fictional three-host intrusion](docs/images/findings.png)
 

@@ -1428,8 +1428,9 @@ function updateLiveWarn(){
 
 /* ---------- help / self-update ---------- */
 function openUrl(u){ try{ new ActiveXObject("WScript.Shell").Run('"'+u+'"',1,false); }catch(e){ setStatus("Could not open browser: "+e.message,"err"); } }
-/* The manual ships next to the app as docs\manual.html (release bundle); otherwise the repository. */
-function openManual(){ var p=(htaFolder()||"")+"\\docs\\manual.html"; openUrl(fileExists(p) ? p : GITHUB+"/blob/main/docs/manual.html"); }
+/* The manual ships next to the app as docs\manual.html (release bundle); otherwise the web copy. */
+var MANUAL_URL = "https://bpmorris22.github.io/LoginActivityTriage/manual.html";
+function openManual(){ var p=(htaFolder()||"")+"\\docs\\manual.html"; openUrl(fileExists(p) ? p : MANUAL_URL); }
 function openHelp(){ try{ $("helpVer").innerHTML="v"+APP_VERSION+(ENGINE_VER?" &middot; engine v"+ENGINE_VER:""); }catch(e){} showEl("helpModal",true); }
 function closeHelp(){ showEl("helpModal",false); }
 var SELF_LATEST="", SELF_ASSET_URL="";

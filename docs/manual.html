@@ -119,7 +119,7 @@
   <li>Keep <code>LoginActivityTriage.hta</code> and <code>LoginActivityTriageCli.exe</code> together in one folder (the exe may also live in a <code>bin</code> subfolder). Copy the folder to a local disk: from a network share, Windows zone policy restricts the HTA's file access.</li>
   <li>Reading this machine's <strong>live Security log</strong> requires administrator rights; the HTA offers <em>Relaunch elevated</em>. Offline EVTX needs no elevation.</li>
 </ul>
-<p>Get both files from the repository's Releases page, or build the engine from source:</p>
+<p>Get both files (or the bundle zip, which includes this manual) from the <a href="https://github.com/bpmorris22/LoginActivityTriage/releases/latest">latest release</a>, or build the engine from source:</p>
 <pre><code>dotnet test LoginActivityTriage.sln
 dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
 
