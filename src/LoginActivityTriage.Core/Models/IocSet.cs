@@ -1,3 +1,5 @@
+using LoginActivityTriage.Core.Mapping;
+
 namespace LoginActivityTriage.Core.Models;
 
 /// <summary>
@@ -7,7 +9,7 @@ namespace LoginActivityTriage.Core.Models;
 ///
 /// Matching is case-insensitive. IPs match exactly; hostnames also match on the
 /// short (first-label) name so a pasted "PC01" flags "PC01.contoso.local"; user
-/// names also match the bare account when events carry a "DOMAIN\user" form.
+/// names also match the bare account when events carry "DOMAIN\user" or "user@realm".
 /// </summary>
 public sealed class IocSet
 {
@@ -27,9 +29,9 @@ public sealed class IocSet
     /// newline / comma / semicolon / space separated).</summary>
     public void Set(string? hostsText, string? ipsText, string? usersText)
     {
-        Load(_hosts, hostsText);
-        Load(_ips, ipsText);
-        Load(_users, usersText);
+        Load(_hosts, hostsText, HostKey.Of);
+        Load(_ips, ipsText, s => s);
+        Load(_users, usersText, s => s);
     }
 
     public void Clear()
@@ -39,37 +41,54 @@ public sealed class IocSet
         _users.Clear();
     }
 
-    private static void Load(HashSet<string> target, string? text)
+    private static void Load(HashSet<string> target, string? text, Func<string, string> extra)
     {
         target.Clear();
         if (string.IsNullOrWhiteSpace(text)) return;
         foreach (var token in text.Split(Separators,
                      StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
             target.Add(token);
+            var alt = extra(token);
+            if (!string.IsNullOrEmpty(alt)) target.Add(alt);
+        }
     }
 
-    /// <summary>True when the event's host, source IP or user matches any indicator.</summary>
+    /// <summary>
+    /// True when the event's host (recording host, source workstation or remote target),
+    /// source IP or user (target or acting subject) matches any indicator.
+    /// </summary>
     public bool Matches(NormalizedEvent e) =>
-        MatchesHost(e.Hostname) || MatchesIp(e.SourceIp) || MatchesUser(e.TargetUserName);
+        MatchesHost(e.Hostname) || MatchesHost(e.WorkstationName) || MatchesHost(e.TargetServer) ||
+        MatchesIp(e.SourceIp) || MatchesUser(e.TargetUserName) || MatchesUser(e.SubjectUserName);
 
-    public bool MatchesIp(string? ip) =>
-        _ips.Count > 0 && !string.IsNullOrWhiteSpace(ip) && _ips.Contains(ip.Trim());
+    /// <summary>True when a stitched remote session touches any indicator.</summary>
+    public bool Matches(RemoteSession s) =>
+        MatchesHost(s.Host) || MatchesHost(s.SourceHost) || MatchesHost(s.TargetHost) || MatchesHost(s.TargetHostName) ||
+        MatchesIp(s.SourceIp) || MatchesIp(s.TargetHost) || MatchesUser(s.User) || MatchesUser(s.CredentialsUsed);
+
+    public bool MatchesIp(string? ip)
+    {
+        if (_ips.Count == 0 || string.IsNullOrWhiteSpace(ip)) return false;
+        // A session may carry several "ip1; ip2" values.
+        foreach (var part in ip.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (_ips.Contains(part)) return true;
+        return false;
+    }
 
     public bool MatchesHost(string? host)
     {
         if (_hosts.Count == 0 || string.IsNullOrWhiteSpace(host)) return false;
         host = host.Trim();
         if (_hosts.Contains(host)) return true;
-        var shortName = host.Split('.')[0];
-        return shortName.Length != host.Length && _hosts.Contains(shortName);
+        var shortName = HostKey.Of(host);
+        return shortName.Length > 0 && _hosts.Contains(shortName);
     }
 
     public bool MatchesUser(string? user)
     {
         if (_users.Count == 0 || string.IsNullOrWhiteSpace(user)) return false;
         user = user.Trim();
-        if (_users.Contains(user)) return true;
-        var slash = user.IndexOf('\\');
-        return slash >= 0 && _users.Contains(user[(slash + 1)..]);
+        return _users.Contains(user) || _users.Contains(UserKey.Bare(user));
     }
 }

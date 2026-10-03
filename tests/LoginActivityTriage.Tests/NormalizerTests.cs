@@ -72,7 +72,7 @@ public class NormalizerTests
         Assert.NotNull(e);
         Assert.Equal(4672, e!.EventId);
         Assert.True(e.IsPrivileged);
-        Assert.True(e.IsSuccess);
+        Assert.False(e.IsSuccess); // describes the 4624 logon; not a second success
         Assert.Equal("jdoe", e.TargetUserName);
         Assert.Equal(true, e.ElevatedToken);
     }

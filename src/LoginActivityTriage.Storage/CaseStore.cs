@@ -6,9 +6,9 @@ using Microsoft.Data.Sqlite;
 namespace LoginActivityTriage.Storage;
 
 /// <summary>
-/// Repository over a single case's SQLite database. Owns one connection for the
-/// lifetime of the open case. All writes for an import go through a single
-/// transaction for throughput.
+/// Repository over a single case's SQLite database. Owns one connection for the lifetime of
+/// the open case. Not thread-safe: callers serialise access (the app only touches it from the
+/// import worker while the UI is busy, or from the UI thread otherwise).
 /// </summary>
 public sealed class CaseStore : IDisposable
 {
@@ -23,7 +23,7 @@ public sealed class CaseStore : IDisposable
         DatabasePath = path;
     }
 
-    /// <summary>Opens (creating if needed) a case database and ensures the schema exists.</summary>
+    /// <summary>Opens (creating if needed) a case database, migrates older schemas and ensures indexes.</summary>
     public static CaseStore Open(string databasePath)
     {
         var dir = Path.GetDirectoryName(databasePath);
@@ -31,13 +31,53 @@ public sealed class CaseStore : IDisposable
 
         var conn = new SqliteConnection($"Data Source={databasePath}");
         conn.Open();
-        using (var cmd = conn.CreateCommand())
-        {
-            cmd.CommandText = CaseSchema.CreateSql;
-            cmd.ExecuteNonQuery();
-        }
+        Exec(conn, CaseSchema.CreateSql);
+        Migrate(conn);
+        Exec(conn, CaseSchema.IndexSql);
         return new CaseStore(conn, databasePath);
     }
+
+    private static void Exec(SqliteConnection conn, string sql)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Adds columns introduced after a case file was created (ALTER TABLE ADD COLUMN).</summary>
+    private static void Migrate(SqliteConnection conn)
+    {
+        AddMissing(conn, "NormalizedEvents", CaseSchema.EventColumns.Select(c => (c.Name, c.SqlType)), out var addedTechnique);
+        AddMissing(conn, "Findings", new[]
+        {
+            ("Mitre", "TEXT"), ("Count", "INTEGER NOT NULL DEFAULT 1"), ("SessionRef", "INTEGER"),
+        }, out _);
+
+        // v0.1 cases flagged RDP by event id only; carry the flag into the technique column.
+        if (addedTechnique)
+            Exec(conn, "UPDATE NormalizedEvents SET Technique = 'RDP' WHERE IsRdp = 1 AND Technique IS NULL;");
+    }
+
+    private static void AddMissing(SqliteConnection conn, string table,
+        IEnumerable<(string Name, string Type)> wanted, out bool addedTechnique)
+    {
+        addedTechnique = false;
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"PRAGMA table_info({table});";
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) existing.Add(r.GetString(1));
+        }
+        foreach (var (name, type) in wanted)
+        {
+            if (existing.Contains(name)) continue;
+            Exec(conn, $"ALTER TABLE {table} ADD COLUMN {name} {type};");
+            if (name == "Technique") addedTechnique = true;
+        }
+    }
+
+    // ------------------------------------------------------------------ cases
 
     /// <summary>Creates a new case row and selects it as the active case.</summary>
     public CaseInfo CreateCase(string name, string? analyst = null, string? description = null)
@@ -83,91 +123,58 @@ public sealed class CaseStore : IDisposable
         };
     }
 
+    // ------------------------------------------------------------------ events
+
     /// <summary>
-    /// Bulk-inserts normalised events (and their raw XML) for the active case in
-    /// one transaction. Sets each event's Id to the assigned row id.
+    /// Bulk-inserts normalised events (and their raw XML) for the active case in one
+    /// transaction. Sets each inserted event's Id. Events whose dedupe key already exists in
+    /// the case are skipped. Returns the number of rows inserted.
     /// </summary>
-    public void InsertEvents(IEnumerable<NormalizedEvent> events)
+    /// <param name="dropRawXmlAfterInsert">Release the raw XML from memory once it is stored.</param>
+    public int InsertEvents(IEnumerable<NormalizedEvent> events, bool dropRawXmlAfterInsert = false)
     {
+        var cols = CaseSchema.EventColumns;
         using var tx = _connection.BeginTransaction();
         using var cmd = _connection.CreateCommand();
         cmd.Transaction = tx;
-        cmd.CommandText = @"
-INSERT INTO NormalizedEvents
-(CaseId, TimestampUtc, UnixMs, Hostname, LogSource, EventId, Provider, RecordId, Channel,
- EventType, TargetUserName, TargetDomain, Sid, SourceIp, SourcePort, WorkstationName,
- LogonType, LogonTypeDescription, AuthenticationPackage, LogonProcess, ElevatedToken,
- ImpersonationLevel, ProcessName, ProcessId, TargetServer, ServiceName, GroupName,
- Status, SubStatus, FailureReason, IsSuccess, IsFailure, IsMachineAccount, IsPrivileged, IsRdp)
-VALUES
-($CaseId, $Ts, $Unix, $Host, $LogSrc, $Eid, $Prov, $Rid, $Chan,
- $Etype, $User, $Dom, $Sid, $Ip, $Port, $Wks,
- $Lt, $Ltd, $Auth, $Lp, $Elev,
- $Imp, $Proc, $Pid, $TServer, $Svc, $Grp,
- $Status, $Sub, $Fail, $Succ, $Failb, $Mach, $Priv, $Rdp);
-SELECT last_insert_rowid();";
+        cmd.CommandText =
+            $"INSERT INTO NormalizedEvents (CaseId, TimestampUtc, UnixMs, {string.Join(", ", cols.Select(c => c.Name))}) " +
+            $"VALUES ($CaseId, $Ts, $Unix, {string.Join(", ", cols.Select((_, i) => "$p" + i))}) " +
+            "ON CONFLICT(CaseId, DedupeKey) DO NOTHING RETURNING Id;";
 
-        var p = cmd.Parameters;
-        foreach (var name in new[] { "$CaseId","$Ts","$Unix","$Host","$LogSrc","$Eid","$Prov","$Rid","$Chan",
-            "$Etype","$User","$Dom","$Sid","$Ip","$Port","$Wks","$Lt","$Ltd","$Auth","$Lp","$Elev",
-            "$Imp","$Proc","$Pid","$TServer","$Svc","$Grp","$Status","$Sub","$Fail",
-            "$Succ","$Failb","$Mach","$Priv","$Rdp" })
-            p.Add(new SqliteParameter(name, DBNull.Value));
+        var caseP = cmd.Parameters.Add(new SqliteParameter("$CaseId", CaseId));
+        var tsP = cmd.Parameters.Add(new SqliteParameter("$Ts", DBNull.Value));
+        var unixP = cmd.Parameters.Add(new SqliteParameter("$Unix", DBNull.Value));
+        var ps = cols.Select((_, i) => cmd.Parameters.Add(new SqliteParameter("$p" + i, DBNull.Value))).ToArray();
 
         using var rawCmd = _connection.CreateCommand();
         rawCmd.Transaction = tx;
         rawCmd.CommandText = "INSERT INTO RawEvents (EventRowId, RawXml) VALUES ($id, $xml);";
-        rawCmd.Parameters.Add(new SqliteParameter("$id", DBNull.Value));
-        rawCmd.Parameters.Add(new SqliteParameter("$xml", DBNull.Value));
+        var idP = rawCmd.Parameters.Add(new SqliteParameter("$id", DBNull.Value));
+        var xmlP = rawCmd.Parameters.Add(new SqliteParameter("$xml", DBNull.Value));
 
+        var inserted = 0;
         foreach (var e in events)
         {
-            p["$CaseId"].Value = CaseId;
-            p["$Ts"].Value = e.Timestamp.ToString("o", CultureInfo.InvariantCulture);
-            p["$Unix"].Value = e.Timestamp.ToUnixTimeMilliseconds();
-            p["$Host"].Value = (object?)e.Hostname ?? DBNull.Value;
-            p["$LogSrc"].Value = (object?)e.LogSource ?? DBNull.Value;
-            p["$Eid"].Value = e.EventId;
-            p["$Prov"].Value = (object?)e.Provider ?? DBNull.Value;
-            p["$Rid"].Value = (object?)e.RecordId ?? DBNull.Value;
-            p["$Chan"].Value = (object?)e.Channel ?? DBNull.Value;
-            p["$Etype"].Value = (object?)e.EventType ?? DBNull.Value;
-            p["$User"].Value = (object?)e.TargetUserName ?? DBNull.Value;
-            p["$Dom"].Value = (object?)e.TargetDomain ?? DBNull.Value;
-            p["$Sid"].Value = (object?)e.Sid ?? DBNull.Value;
-            p["$Ip"].Value = (object?)e.SourceIp ?? DBNull.Value;
-            p["$Port"].Value = (object?)e.SourcePort ?? DBNull.Value;
-            p["$Wks"].Value = (object?)e.WorkstationName ?? DBNull.Value;
-            p["$Lt"].Value = (object?)e.LogonType ?? DBNull.Value;
-            p["$Ltd"].Value = (object?)e.LogonTypeDescription ?? DBNull.Value;
-            p["$Auth"].Value = (object?)e.AuthenticationPackage ?? DBNull.Value;
-            p["$Lp"].Value = (object?)e.LogonProcess ?? DBNull.Value;
-            p["$Elev"].Value = e.ElevatedToken is null ? DBNull.Value : (e.ElevatedToken.Value ? 1 : 0);
-            p["$Imp"].Value = (object?)e.ImpersonationLevel ?? DBNull.Value;
-            p["$Proc"].Value = (object?)e.ProcessName ?? DBNull.Value;
-            p["$Pid"].Value = (object?)e.ProcessId ?? DBNull.Value;
-            p["$TServer"].Value = (object?)e.TargetServer ?? DBNull.Value;
-            p["$Svc"].Value = (object?)e.ServiceName ?? DBNull.Value;
-            p["$Grp"].Value = (object?)e.GroupName ?? DBNull.Value;
-            p["$Status"].Value = (object?)e.Status ?? DBNull.Value;
-            p["$Sub"].Value = (object?)e.SubStatus ?? DBNull.Value;
-            p["$Fail"].Value = (object?)e.FailureReason ?? DBNull.Value;
-            p["$Succ"].Value = e.IsSuccess ? 1 : 0;
-            p["$Failb"].Value = e.IsFailure ? 1 : 0;
-            p["$Mach"].Value = e.IsMachineAccount ? 1 : 0;
-            p["$Priv"].Value = e.IsPrivileged ? 1 : 0;
-            p["$Rdp"].Value = e.IsRdp ? 1 : 0;
+            tsP.Value = e.Timestamp.ToString("o", CultureInfo.InvariantCulture);
+            unixP.Value = e.Timestamp == DateTimeOffset.MinValue ? 0L : e.Timestamp.ToUnixTimeMilliseconds();
+            for (var i = 0; i < cols.Count; i++) ps[i].Value = cols[i].Get(e) ?? DBNull.Value;
 
-            var id = (long)(cmd.ExecuteScalar() ?? 0L);
+            var result = cmd.ExecuteScalar();
+            if (result is null or DBNull) continue; // duplicate
+            var id = Convert.ToInt64(result, CultureInfo.InvariantCulture);
             e.Id = id;
             e.CaseId = CaseId;
+            inserted++;
 
-            rawCmd.Parameters["$id"].Value = id;
-            rawCmd.Parameters["$xml"].Value = (object?)e.RawXml ?? DBNull.Value;
+            idP.Value = id;
+            xmlP.Value = (object?)e.RawXml ?? DBNull.Value;
             rawCmd.ExecuteNonQuery();
+            if (dropRawXmlAfterInsert) e.RawXml = null;
         }
 
         tx.Commit();
+        return inserted;
     }
 
     public void RecordImportedFile(ImportedFileResult file)
@@ -190,24 +197,49 @@ SELECT last_insert_rowid();";
         cmd.ExecuteNonQuery();
     }
 
-    /// <summary>Queries events for the active case, applying the supplied filter in SQL.</summary>
+    /// <summary>
+    /// Queries events for the active case. Coarse criteria are applied in SQL; the filter's
+    /// own <see cref="EventFilter.Matches"/> then gives the exact semantics (CIDR, user OR
+    /// subject, derived flags) so SQL and in-memory filtering always agree.
+    /// </summary>
     public List<NormalizedEvent> QueryEvents(EventFilter? filter = null, int? limit = null)
     {
-        var sql = new StringBuilder("SELECT * FROM NormalizedEvents WHERE CaseId = $caseId");
+        var sql = new StringBuilder(
+            $"SELECT Id, CaseId, TimestampUtc, {string.Join(", ", CaseSchema.EventColumns.Where(c => c.Set is not null).Select(c => c.Name))} " +
+            "FROM NormalizedEvents WHERE CaseId = $caseId");
         using var cmd = _connection.CreateCommand();
         cmd.Parameters.AddWithValue("$caseId", CaseId);
 
         if (filter is not null)
-            BuildWhere(filter, sql, cmd);
+        {
+            if (filter.From is not null) { sql.Append(" AND UnixMs >= $from"); cmd.Parameters.AddWithValue("$from", filter.From.Value.ToUnixTimeMilliseconds()); }
+            if (filter.To is not null) { sql.Append(" AND UnixMs <= $to"); cmd.Parameters.AddWithValue("$to", filter.To.Value.ToUnixTimeMilliseconds()); }
+            if (filter.EventId is not null) { sql.Append(" AND EventId = $eid"); cmd.Parameters.AddWithValue("$eid", filter.EventId.Value); }
+            if (filter.LogonType is not null) { sql.Append(" AND LogonType = $lt"); cmd.Parameters.AddWithValue("$lt", filter.LogonType.Value); }
+            if (filter.Success is true) sql.Append(" AND IsSuccess = 1");
+            if (filter.Success is false) sql.Append(" AND IsFailure = 1");
+        }
 
-        sql.Append(" ORDER BY UnixMs ASC");
-        if (limit is not null) sql.Append(" LIMIT ").Append(limit.Value);
+        sql.Append(" ORDER BY UnixMs ASC, Id ASC");
+        if (limit is not null && (filter is null || filter.IsEmpty)) sql.Append(" LIMIT ").Append(limit.Value);
         cmd.CommandText = sql.ToString();
 
+        var settable = CaseSchema.EventColumns.Where(c => c.Set is not null).ToArray();
         var list = new List<NormalizedEvent>();
         using var r = cmd.ExecuteReader();
         while (r.Read())
-            list.Add(MapEvent(r));
+        {
+            var e = new NormalizedEvent
+            {
+                Id = r.GetInt64(0),
+                CaseId = r.GetInt64(1),
+                Timestamp = DateTimeOffset.Parse(r.GetString(2), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal),
+            };
+            for (var i = 0; i < settable.Length; i++)
+                settable[i].Set!(e, r.IsDBNull(i + 3) ? null : r.GetValue(i + 3));
+            if (filter is null || filter.Matches(e)) list.Add(e);
+            if (limit is not null && list.Count >= limit) break;
+        }
         return list;
     }
 
@@ -245,12 +277,32 @@ SELECT last_insert_rowid();";
         return (long)(cmd.ExecuteScalar() ?? 0L);
     }
 
-    public void InsertFinding(Finding finding)
+    // ------------------------------------------------------------------ findings
+
+    /// <summary>Replaces every stored finding of the active case (analytics are recomputed, never appended).</summary>
+    public void ReplaceFindings(IEnumerable<Finding> findings)
+    {
+        using var tx = _connection.BeginTransaction();
+        using (var del = _connection.CreateCommand())
+        {
+            del.Transaction = tx;
+            del.CommandText = "DELETE FROM Findings WHERE CaseId = $c;";
+            del.Parameters.AddWithValue("$c", CaseId);
+            del.ExecuteNonQuery();
+        }
+        foreach (var f in findings) InsertFinding(f, tx);
+        tx.Commit();
+    }
+
+    public void InsertFinding(Finding finding) => InsertFinding(finding, null);
+
+    private void InsertFinding(Finding finding, SqliteTransaction? tx)
     {
         using var cmd = _connection.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = @"INSERT INTO Findings
-            (CaseId, Severity, RuleName, Description, TimestampUtc, User, SourceIp, Host, RelatedEventIds, Reasoning)
-            VALUES ($c,$sev,$rule,$desc,$ts,$user,$ip,$host,$rel,$reason);";
+            (CaseId, Severity, RuleName, Description, TimestampUtc, User, SourceIp, Host, RelatedEventIds, Reasoning, Mitre, Count, SessionRef)
+            VALUES ($c,$sev,$rule,$desc,$ts,$user,$ip,$host,$rel,$reason,$mitre,$count,$sref);";
         cmd.Parameters.AddWithValue("$c", CaseId);
         cmd.Parameters.AddWithValue("$sev", (int)finding.Severity);
         cmd.Parameters.AddWithValue("$rule", finding.RuleName);
@@ -261,6 +313,9 @@ SELECT last_insert_rowid();";
         cmd.Parameters.AddWithValue("$host", (object?)finding.Host ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$rel", (object?)finding.RelatedEventIds ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$reason", (object?)finding.Reasoning ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$mitre", (object?)finding.Mitre ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$count", finding.Count);
+        cmd.Parameters.AddWithValue("$sref", (object?)finding.SessionRef ?? DBNull.Value);
         cmd.ExecuteNonQuery();
     }
 
@@ -269,7 +324,7 @@ SELECT last_insert_rowid();";
     {
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = @"SELECT Severity, RuleName, Description, TimestampUtc, User, SourceIp, Host,
-                                   RelatedEventIds, Reasoning
+                                   RelatedEventIds, Reasoning, Mitre, Count, SessionRef
                             FROM Findings WHERE CaseId = $c ORDER BY Severity DESC, TimestampUtc ASC;";
         cmd.Parameters.AddWithValue("$c", CaseId);
         var list = new List<Finding>();
@@ -287,6 +342,9 @@ SELECT last_insert_rowid();";
                 Host = r.IsDBNull(6) ? null : r.GetString(6),
                 RelatedEventIds = r.IsDBNull(7) ? null : r.GetString(7),
                 Reasoning = r.IsDBNull(8) ? null : r.GetString(8),
+                Mitre = r.IsDBNull(9) ? null : r.GetString(9),
+                Count = r.IsDBNull(10) ? 1 : r.GetInt32(10),
+                SessionRef = r.IsDBNull(11) ? null : r.GetInt32(11),
             });
         return list;
     }
@@ -299,6 +357,8 @@ SELECT last_insert_rowid();";
         cmd.Parameters.AddWithValue("$c", CaseId);
         return Convert.ToInt64(cmd.ExecuteScalar() ?? 0L) != 0;
     }
+
+    // ------------------------------------------------------------------ IOCs
 
     /// <summary>Persists the IOC lists for the active case (replacing any prior row).</summary>
     public void SaveIocs(string? hosts, string? ips, string? users)
@@ -328,77 +388,6 @@ SELECT last_insert_rowid();";
         return (r.IsDBNull(0) ? null : r.GetString(0),
                 r.IsDBNull(1) ? null : r.GetString(1),
                 r.IsDBNull(2) ? null : r.GetString(2));
-    }
-
-    private static void BuildWhere(EventFilter f, StringBuilder sql, SqliteCommand cmd)
-    {
-        void Like(string col, string param, string? value)
-        {
-            if (string.IsNullOrWhiteSpace(value)) return;
-            sql.Append(" AND ").Append(col).Append(" LIKE ").Append(param);
-            cmd.Parameters.AddWithValue(param, "%" + value.Trim() + "%");
-        }
-
-        if (f.From is not null) { sql.Append(" AND UnixMs >= $from"); cmd.Parameters.AddWithValue("$from", f.From.Value.ToUnixTimeMilliseconds()); }
-        if (f.To is not null) { sql.Append(" AND UnixMs <= $to"); cmd.Parameters.AddWithValue("$to", f.To.Value.ToUnixTimeMilliseconds()); }
-        if (f.EventId is not null) { sql.Append(" AND EventId = $eid"); cmd.Parameters.AddWithValue("$eid", f.EventId.Value); }
-        if (f.LogonType is not null) { sql.Append(" AND LogonType = $lt"); cmd.Parameters.AddWithValue("$lt", f.LogonType.Value); }
-        Like("TargetUserName", "$user", f.User);
-        Like("Hostname", "$host", f.Host);
-        Like("SourceIp", "$ip", f.SourceIp);
-        Like("AuthenticationPackage", "$auth", f.AuthPackage);
-        if (f.Success is true) sql.Append(" AND IsSuccess = 1");
-        if (f.Success is false) sql.Append(" AND IsFailure = 1");
-        if (f.PrivilegedOnly) sql.Append(" AND IsPrivileged = 1");
-        if (f.RdpOnly) sql.Append(" AND IsRdp = 1");
-        if (f.ExcludeMachineAccounts) sql.Append(" AND IsMachineAccount = 0");
-        if (f.ExcludeLocalOrBlankSource)
-            sql.Append(" AND SourceIp IS NOT NULL AND SourceIp NOT IN ('-','::1','127.0.0.1','0.0.0.0')");
-    }
-
-    private static NormalizedEvent MapEvent(SqliteDataReader r)
-    {
-        string? S(string c) { var i = r.GetOrdinal(c); return r.IsDBNull(i) ? null : r.GetString(i); }
-        long? L(string c) { var i = r.GetOrdinal(c); return r.IsDBNull(i) ? null : r.GetInt64(i); }
-        int? I(string c) { var i = r.GetOrdinal(c); return r.IsDBNull(i) ? null : r.GetInt32(i); }
-        bool B(string c) { var i = r.GetOrdinal(c); return !r.IsDBNull(i) && r.GetInt64(i) != 0; }
-        bool? NB(string c) { var i = r.GetOrdinal(c); return r.IsDBNull(i) ? null : r.GetInt64(i) != 0; }
-
-        return new NormalizedEvent
-        {
-            Id = r.GetInt64(r.GetOrdinal("Id")),
-            CaseId = r.GetInt64(r.GetOrdinal("CaseId")),
-            Timestamp = DateTimeOffset.Parse(r.GetString(r.GetOrdinal("TimestampUtc")), CultureInfo.InvariantCulture),
-            Hostname = S("Hostname"),
-            LogSource = S("LogSource"),
-            EventId = r.GetInt32(r.GetOrdinal("EventId")),
-            Provider = S("Provider"),
-            RecordId = L("RecordId"),
-            Channel = S("Channel"),
-            EventType = S("EventType") ?? string.Empty,
-            TargetUserName = S("TargetUserName"),
-            TargetDomain = S("TargetDomain"),
-            Sid = S("Sid"),
-            SourceIp = S("SourceIp"),
-            SourcePort = S("SourcePort"),
-            WorkstationName = S("WorkstationName"),
-            LogonType = I("LogonType"),
-            LogonTypeDescription = S("LogonTypeDescription"),
-            AuthenticationPackage = S("AuthenticationPackage"),
-            LogonProcess = S("LogonProcess"),
-            ElevatedToken = NB("ElevatedToken"),
-            ImpersonationLevel = S("ImpersonationLevel"),
-            ProcessName = S("ProcessName"),
-            ProcessId = S("ProcessId"),
-            TargetServer = S("TargetServer"),
-            ServiceName = S("ServiceName"),
-            GroupName = S("GroupName"),
-            Status = S("Status"),
-            SubStatus = S("SubStatus"),
-            FailureReason = S("FailureReason"),
-            IsSuccess = B("IsSuccess"),
-            IsFailure = B("IsFailure"),
-        };
     }
 
     public void Dispose()

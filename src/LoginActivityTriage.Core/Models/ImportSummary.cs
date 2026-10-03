@@ -1,6 +1,6 @@
 namespace LoginActivityTriage.Core.Models;
 
-/// <summary>Outcome of importing one EVTX file.</summary>
+/// <summary>Outcome of importing one EVTX file (or live channel).</summary>
 public sealed class ImportedFileResult
 {
     public required string FilePath { get; init; }
@@ -9,6 +9,8 @@ public sealed class ImportedFileResult
     public int RecordsRead { get; set; }
     public int EventsNormalised { get; set; }
     public int RecordsSkipped { get; set; }
+    public int DuplicatesSkipped { get; set; }
+    public int Filtered { get; set; }
     public bool Failed { get; set; }
     public string? Error { get; set; }
 }
@@ -24,4 +26,6 @@ public sealed class ImportSummary
     public int TotalRecordsRead => Files.Sum(f => f.RecordsRead);
     public int TotalEventsNormalised => Files.Sum(f => f.EventsNormalised);
     public int TotalSkipped => Files.Sum(f => f.RecordsSkipped);
+    public int TotalDuplicates => Files.Sum(f => f.DuplicatesSkipped);
+    public int TotalFiltered => Files.Sum(f => f.Filtered);
 }

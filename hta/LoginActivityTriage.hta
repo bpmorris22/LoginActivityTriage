@@ -1,0 +1,1565 @@
+<!doctype html>
+<html>
+<head>
+<meta http-equiv="x-ua-compatible" content="IE=edge">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>Login Activity Triage</title>
+<HTA:APPLICATION
+  ID="latHta"
+  APPLICATIONNAME="Login Activity Triage"
+  BORDER="thick"
+  CAPTION="yes"
+  SCROLL="auto"
+  SINGLEINSTANCE="no"
+  SHOWINTASKBAR="yes"
+  MAXIMIZEBUTTON="yes"
+  MINIMIZEBUTTON="yes"
+  INNERBORDER="no"
+  CONTEXTMENU="yes"
+  SELECTION="yes" />
+<!--
+  Login Activity Triage - HTA front end for LoginActivityTriageCli.exe (same repo, C# / .NET 8).
+
+  ENGINE CONTRACT (LoginActivityTriageCli 0.2.x):
+    (0.2.1: --tz defaults to auto = each host's own UTC offset from System event 6013)
+    LoginActivityTriageCli.exe (-d <folder> | -f <file.evtx> | --live) -o <outDir>
+        [--tz <id|local|utc>] [--hours S-E] [--no-weekend] [--keep-noise] [--from <utc>] [--to <utc>]
+    writes to <outDir>: events.csv timeline.csv sessions.csv findings.csv users.csv sourceips.csv hosts.csv
+                        remotehosts.csv (0.2.1+; older results show "not found" on the Remote hosts tab) files.csv
+                        summary.json run.log report-findings.html report-sessions.html
+    Exit codes: 0 ok, 1 usage, 2 no EVTX found, 3 fatal, 4 no input could be read.
+    Results are staged and published only on success (summary.json last); on failure the output
+    folder keeps the previous run's files, which this app then does NOT load or record.
+    CSVs are UTF-8 with BOM, RFC-4180, timestamps ISO-8601 UTC "...Z". Values that a spreadsheet would
+    evaluate (= + - @ at the start) are prefixed with an apostrophe; this app strips it for display.
+
+  The engine is read-only against the evidence. The HTA only reads its CSVs, writes exports and
+  runinfo.json into the output folder, and runs the engine in a visible console.
+
+  FAMILY CONVENTIONS (shared with Hayabusa-Wrapper / PECmd-Wrapper / DFIR-Artifact-Finder):
+    * output: <appFolder>\_Processed\<Hostname>\LoginActivityTriage\ (hostname required)
+    * runinfo.json provenance + triage summary appended after each run
+    * IOC.txt next to the .hta auto-merged into the IOC box at launch
+    * CLI: mshta LoginActivityTriage.hta "<evtxDir|evtx|resultsDir|csv>" ["<outDir>"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd] [/tz:<id>]
+-->
+<style>
+  html{margin:0;height:100%;background:#0d1117}
+  body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font-family:Segoe UI,Tahoma,sans-serif;font-size:16px}
+  #content{zoom:0.9;width:111.111%;box-sizing:border-box}
+  a{color:#58a6ff}
+  .mono{font-family:Consolas,"Courier New",monospace}
+  .muted{color:#8b949e}
+  .err{color:#f85149}
+  .ok{color:#3fb950}
+  header{padding:8px 14px;background:#161b22;border-bottom:1px solid #30363d}
+  header h1{display:inline-block;font-size:15px;margin:0;font-weight:600;vertical-align:middle}
+  header h1 small{color:#8b949e;font-weight:400}
+  .pill{display:inline-block;font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:20px;padding:2px 10px;margin-left:8px;vertical-align:middle}
+  .pill.ok{color:#7ee787;border-color:#2ea043}
+  .pill.bad{color:#ff8b3d;border-color:#bd561d}
+  .wrap{padding:12px 14px}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px}
+  .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  label.fld{display:block;margin:6px 0 2px;font-size:11px;color:#8b949e}
+  input.txt,select,textarea{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:5px 8px;font-size:13px;font-family:Consolas,monospace}
+  input.wide{width:62%}
+  .btn{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;margin:2px}
+  .btn:hover{border-color:#58a6ff}
+  .btn.primary{background:#1f6feb;border-color:#1f6feb}
+  .btn.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  .btn[disabled]{opacity:.5;cursor:default}
+  .row{white-space:nowrap}
+  .stat{display:inline-block;background:#1c2330;border:1px solid #30363d;border-radius:8px;padding:6px 12px;margin:0 6px 6px 0;min-width:70px;vertical-align:top;cursor:default}
+  .stat.click{cursor:pointer}
+  .stat.click:hover{border-color:#58a6ff}
+  .stat .n{font-size:17px;font-weight:700;display:block}
+  .stat .l{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+  .stat.crit{border-color:#8b3a3a}.stat.crit .n{color:#ff6b6b}
+  .stat.high{border-color:#8a5a2a}.stat.high .n{color:#f0883e}
+  .stat.med{border-color:#8a7a2a}.stat.med .n{color:#e3b341}
+  .stat.low{border-color:#2a5a8a}.stat.low .n{color:#58a6ff}
+  .stat.rex{border-color:#6e40c9}.stat.rex .n{color:#d2a8ff}
+  .col3{display:inline-block;width:32%;vertical-align:top;margin-right:1%}
+  .brow{white-space:nowrap;margin:3px 0}
+  .blab{display:inline-block;width:52%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;font-family:Consolas,monospace;font-size:11px}
+  .btrack{display:inline-block;width:30%;height:12px;background:#1c2330;border-radius:3px;overflow:hidden;vertical-align:middle}
+  .bfill{display:block;height:100%;background:#1f6feb}
+  .bfill.rex{background:#8957e5}
+  .bfill.crit{background:#da3633}
+  .bval{display:inline-block;width:14%;text-align:right;font-size:11px;color:#8b949e;vertical-align:middle}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:4px 7px;border-bottom:1px solid #30363d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  th{background:#1c2330;cursor:pointer;color:#c9d1d9;position:relative;z-index:3;box-shadow:0 1px 0 #30363d}
+  th:hover{color:#58a6ff}
+  th.sorted{color:#e6edf3}
+  th .sbtn{display:inline-block;margin:0 0 0 6px;padding:0 5px;min-width:18px;border:1px solid #30363d;border-radius:4px;background:#0d1117;color:#8b949e;font-family:Segoe UI,Tahoma,sans-serif;font-size:10px;line-height:15px;vertical-align:middle;cursor:pointer}
+  th .sbtn:hover{border-color:#58a6ff;color:#58a6ff}
+  th .sbtn.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  td{max-width:420px}
+  tr.sev-crit td{background:#2a1416}
+  tr.sev-high td{background:#241c12}
+  tr.sev-med td{background:#221f10}
+  tr.rex td{background:#1d1630}
+  tr.fail td{color:#ff9b93}
+  tr.priv td.first{border-left:3px solid #e3b341}
+  tr.ioc td.first{border-left:3px solid #ff6b6b}
+  tr.sel td{background:#1c2f4a}
+  tr.clk{cursor:pointer}
+  .scroll{max-height:58vh;overflow:auto;border:1px solid #30363d;border-radius:8px;width:100%;box-sizing:border-box}
+  .chip{display:inline-block;font-size:10px;padding:1px 7px;border-radius:10px;font-weight:700;letter-spacing:.3px}
+  .sv-Critical{background:#3a1416;color:#ff6b6b}
+  .sv-High{background:#3a2a10;color:#f0883e}
+  .sv-Medium{background:#3a3410;color:#e3b341}
+  .sv-Low{background:#10263f;color:#58a6ff}
+  .sv-Info{background:#21262d;color:#8b949e}
+  .tq{display:inline-block;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:600;background:#271b45;color:#d2a8ff;border:1px solid #6e40c9}
+  .tq.rdp{background:#10263f;color:#79c0ff;border-color:#1f6feb}
+  .tq.out{background:#132a20;color:#7ee787;border-color:#2ea043}
+  .act{display:inline-block;font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600;margin-right:4px;border:1px solid}
+  .act.on{background:#0f2a1a;color:#56d364;border-color:#238636}
+  .act.fail{background:#3a1416;color:#ff7b72;border-color:#8b3a3a}
+  .act.off{background:#21262d;color:#9da7b3;border-color:#3d444d}
+  .act.ses{background:#1c2330;color:#a5b4c8;border-color:#3d4f66}
+  .act.pwr{background:#2e2410;color:#e3b341;border-color:#9e6a03}
+  .act.crash{background:#3a2010;color:#ff9f43;border-color:#bd561d}
+  .dl{font-family:Consolas,"Courier New",monospace;font-size:11px;max-height:300px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;white-space:normal;word-break:break-word;width:100%;box-sizing:border-box}
+  .dl div{margin:1px 0}
+  .kv{color:#8b949e;display:inline-block;min-width:150px}
+  .hl-ioc{color:#ff6b6b;font-weight:700}
+  .kh{display:inline-block;margin-left:5px;padding:0 6px;border-radius:9px;font-size:10px;line-height:14px;font-family:Segoe UI,Tahoma,sans-serif;background:#0f2a2a;color:#56d4c4;border:1px solid #1b6b63;vertical-align:baseline}
+  .khgrid td,.khgrid th{border-bottom:1px solid #30363d;padding:3px 4px;cursor:default}
+  .khgrid input.txt{width:100%;box-sizing:border-box}
+  .khbad input.txt{border-color:#f85149}
+  #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:160px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px;width:100%;box-sizing:border-box}
+  .hide{display:none}
+  .lnk{cursor:pointer;color:#58a6ff}
+  .lnk:hover{text-decoration:underline}
+  .sep{display:inline-block;width:1px;height:18px;background:#30363d;margin:0 6px;vertical-align:middle}
+  .tfilt{display:inline-block;background:#10263f;border:1px solid #1f6feb;border-radius:12px;padding:2px 10px;font-size:11px;margin-left:6px}
+  .tfilt .x{cursor:pointer;color:#ff6b6b;margin-left:6px;font-weight:700}
+  .tabs .btn{border-radius:6px 6px 0 0;margin:0 2px -1px 0}
+  .modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.66);z-index:1000;overflow:auto}
+  .modal .mcard{max-width:820px;margin:36px auto;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px 22px}
+  .modal h2{margin:0 0 6px;font-size:18px;font-weight:600}
+  .modal h3{margin:12px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  .modal ul{margin:4px 0;padding-left:20px}.modal li{margin:3px 0;font-size:13px}
+  .modal p{font-size:13px;margin:6px 0}
+  .modal code{background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:2px 6px;font-family:Consolas,monospace;font-size:12px}
+  .modal .x{float:right;cursor:pointer;color:#8b949e;font-size:22px;line-height:1}.modal .x:hover{color:#e6edf3}
+  .maxwarn{display:inline-block;color:#e3b341;font-weight:600;cursor:help;border:1px solid #8a7a2a;background:#2a2410;border-radius:10px;padding:1px 8px;font-size:11px;margin-left:6px;vertical-align:middle}
+  .warnbox{background:#2a2410;border:1px solid #8a7a2a;color:#e3b341;border-radius:6px;padding:6px 10px;font-size:12px;margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Login Activity Triage <small>&mdash; logons, RDP, PsExec, PowerShell Remoting &amp; lateral movement from EVTX</small></h1>
+  <span class="pill" id="apppill" title="This app's version">app: checking&hellip;</span>
+  <span class="pill" id="engpill" title="LoginActivityTriageCli.exe (the parsing / detection engine)">engine: checking&hellip;</span>
+  <span class="pill" id="srcpill">no results loaded</span>
+  <span style="float:right">
+    <button class="btn" onclick="openHelp()" title="Help, about &amp; GitHub link">Help</button>
+    <button class="btn primary hide" id="selfUpd" onclick="doSelfUpdate()" title="A newer version is available on GitHub">Update</button>
+    <button class="btn" id="fdown" title="Smaller text">A&minus;</button>
+    <button class="btn" id="fup" title="Larger text">A+</button>
+  </span>
+</header>
+
+<div class="wrap" id="content">
+
+  <!-- CONTROL PANEL -->
+  <div class="card">
+    <h3>Control panel</h3>
+    <div class="muted" id="exeline" style="font-size:11px;margin-bottom:6px"></div>
+    <label class="fld">Event logs to process &mdash;
+      <select id="inMode" title="Directory = recurse a folder of .evtx (KAPE / Velociraptor collection trees work as-is). File = one .evtx. Live = this machine's event logs, read through the Event Log service (run elevated for Security).">
+        <option value="d">directory (recursive)</option><option value="f">single .evtx file</option><option value="live">this machine (live logs)</option></select>
+      &nbsp;<span class="muted" style="font-size:11px" title="Every timestamp the engine writes is ISO-8601 UTC (...Z). Only the after-hours rule uses the time zone below.">times: UTC ISO-8601</span>
+    </label>
+    <label class="fld">Event-log path (folder or single .evtx)</label>
+    <input class="txt wide" id="inPath" value="" title="Event-log source: a folder to recurse, or a single .evtx file.">
+    <input type="file" id="inPick" style="display:none">
+    <button class="btn" id="browseBtn">Browse&hellip;</button>
+    <button class="btn" id="liveBtn" title="Analyse this machine's live event logs. Reading Security needs an ELEVATED run.">This machine</button>
+    <button class="btn hide" id="elevBtn" title="Relaunch this app as administrator (UAC prompt) so the live Security log can be read.">Relaunch elevated</button>
+    <label class="fld" title="Required before processing. Guessed from the input path (Collection-&lt;host&gt;-... segments, or this machine for live logs) - overwrite it if the guess is wrong.">Target hostname (required) &mdash; names the output folder _Processed\&lt;host&gt;\LoginActivityTriage next to this app</label>
+    <input class="txt" id="hostName" value="" style="width:260px" placeholder="e.g. SRV01 or CASE-ALL-HOSTS">
+    <label class="fld">Output directory</label>
+    <input class="txt wide" id="outDir" value="">
+    <button class="btn" id="openDirBtn">Open folder</button>
+    <div style="margin-top:8px" class="row">
+      <label class="muted" style="font-size:12px" title="auto = each host's own UTC offset read from its System event 6013 (UTC where a host has none). Or force one zone for every host - the EVIDENCE site's zone, never this analysis box's by accident. All other output stays UTC.">after-hours zone
+        <select id="optTz" style="width:230px"></select></label>
+      &nbsp;<label class="muted" style="font-size:12px" title="Business hours in that zone (whole hours, start-end).">hours
+        <input class="txt" id="optHours" value="7-19" style="width:60px"></label>
+      &nbsp;<label style="font-size:12px" title="Saturday and Sunday count as after hours."><input type="checkbox" id="optWeekend" checked> weekends = after hours</label>
+      &nbsp;<label style="font-size:12px" title="Keep logon/logoff/ticket events of machine ($), SYSTEM, LOCAL/NETWORK SERVICE, DWM, UMFD and anonymous accounts. Off = faster, smaller output; remote-exec evidence and failures are never dropped."><input type="checkbox" id="optNoise"> keep machine/system-account noise</label>
+      &nbsp;<label class="muted" style="font-size:12px" title="Optional UTC window applied by the engine (events outside are not imported). Leave blank for everything.">engine window (UTC)
+        <input class="txt mono" id="optFrom" placeholder="from YYYY-MM-DD" style="width:120px"> &rarr;
+        <input class="txt mono" id="optTo" placeholder="to YYYY-MM-DD" style="width:120px"></label>
+    </div>
+    <div style="margin-top:10px">
+      <button class="btn primary" id="procBtn">Process &rarr; analyze</button>
+      <button class="btn" id="loadBtn" title="Open a results folder produced earlier (pick its summary.json, events.csv or any of its CSVs).">Load results&hellip;</button>
+      <input type="file" id="resPick" style="display:none">
+      <span class="sep"></span>
+      <button class="btn" id="verBtn" title="Re-detect the engine and print its version.">Check engine</button>
+      <button class="btn hide" id="getBtn" title="Download LoginActivityTriageCli.exe from the latest GitHub release next to this app.">Download engine</button>
+      <span class="sep"></span>
+      <button class="btn" id="logToggle">Show log</button>
+      <button class="btn hide" id="htmlBtn" title="Open the engine's HTML reports (findings + sessions) for the loaded results">HTML reports</button>
+      <button class="btn hide" id="tleBtn" title="Open events.csv of the loaded results in Eric Zimmerman's Timeline Explorer">Open in Timeline Explorer</button>
+      <span class="muted" id="status" style="margin-left:8px"></span>
+    </div>
+    <div id="liveWarn" class="warnbox hide"></div>
+    <div id="log"></div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="results" class="hide">
+    <div class="card">
+      <h3 id="ovTitle">Overview</h3>
+      <div id="statbar"></div>
+      <div id="ovMeta" class="muted" style="font-size:11px;margin-top:2px"></div>
+    </div>
+
+    <div class="card" id="ovCards">
+      <div class="col3"><h3>Findings by rule</h3><div id="topRules"></div></div>
+      <div class="col3"><h3>Remote sessions by technique</h3><div id="topTech"></div></div>
+      <div class="col3"><h3>Most suspicious accounts / sources</h3><div id="topSusp"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="tabs row" style="border-bottom:1px solid #30363d;margin-bottom:8px">
+        <button class="btn on" data-view="findings" title="Rule-based findings ranked by severity">Findings</button>
+        <button class="btn" data-view="sessions" title="Stitched remote-access sessions: RDP, PsExec, PowerShell Remoting, WMI, DCOM, scheduled tasks, admin-share drops, outbound activity">Remote sessions</button>
+        <button class="btn" data-view="timeline" title="Every normalised event (loaded on first use)">Timeline</button>
+        <button class="btn" data-view="users" title="Per-account rollup with a heuristic suspicion score">Users</button>
+        <button class="btn" data-view="ips" title="Per-source-IP rollup">Source IPs</button>
+        <button class="btn" data-view="hosts" title="Per-host rollup of the systems whose logs were collected">Local hosts</button>
+        <button class="btn" data-view="remotes" title="Systems the collected hosts connected to - outbound RDP / PsExec / WinRM / WMI targets and explicit-credential (4648) targets - one row per destination, with an address and its resolved name merged">Remote hosts</button>
+        <button class="btn" data-view="files" title="What the engine read: per-file record counts, duplicates, errors">Import log</button>
+      </div>
+      <div class="row" style="margin-bottom:8px" id="sevCats">
+        <button class="btn on" data-sev="all">All</button>
+        <button class="btn" data-sev="Critical">Critical</button>
+        <button class="btn" data-sev="High">High</button>
+        <button class="btn" data-sev="Medium">Medium</button>
+        <button class="btn" data-sev="Low">Low</button>
+      </div>
+      <div class="row" style="margin-bottom:8px;white-space:normal;line-height:34px">
+        <input class="txt" id="q" placeholder="search all columns&hellip;" style="width:260px">
+        <span class="sep"></span><label class="muted" style="font-size:12px">host:</label>
+        <select id="hostSel"><option value="">all hosts</option></select>
+        <span id="techWrap"><span class="sep"></span><label class="muted" style="font-size:12px">technique:</label>
+          <select id="techSel"><option value="">all</option></select></span>
+        <span id="tlOpts" class="hide"><span class="sep"></span>
+          <label style="font-size:12px" title="Only events that are evidence of remote execution (PsExec, WinRM, WMI, tasks, admin shares...)."><input type="checkbox" id="remOnly"> remote-exec only</label>
+          <label style="font-size:12px" title="Only failed authentications."><input type="checkbox" id="failOnly"> failures only</label>
+          <label style="font-size:12px" title="The Timeline normally loads timeline.csv: every event except routine successful network / domain-controller authentication that is not part of a remote session. Tick to load the complete events.csv instead (can be large and slow; Open in Timeline Explorer is better for huge sets)."><input type="checkbox" id="fullEv"> full events.csv</label></span>
+        <span class="sep"></span>
+        <input class="txt mono" id="dfrom" placeholder="from YYYY-MM-DD" style="width:120px" title="Filter by date (UTC)">
+        <span class="muted">&rarr;</span>
+        <input class="txt mono" id="dto" placeholder="to YYYY-MM-DD" style="width:120px" title="Filter by date (UTC)">
+        <span class="sep"></span>
+        <button class="btn" id="iocBtn" title="Define IOCs (host names, IPs, users, services, files): matching rows get a red left border">IOCs&hellip;</button>
+        <label style="font-size:12px"><input type="checkbox" id="iocOnly"> IOC hits only</label>
+        <button class="btn" id="khBtn" title="Map IP addresses to host names: the names are shown next to the IPs in every table (display only)">Known hosts&hellip;</button>
+        <button class="btn" id="clearBtn">clear</button>
+        <button class="btn" id="exportBtn">Export view &rarr; CSV</button>
+        <button class="btn" id="copyBtn">Copy for case notes</button>
+        <span id="chips"></span>
+        <span class="muted" id="count" style="margin-left:8px"></span>
+      </div>
+      <div class="scroll" id="tblScroll"><table id="tbl"></table></div>
+      <div class="muted" id="foot" style="font-size:11px;margin-top:6px">All timestamps are UTC. Click a row for full detail and pivots. Click a column's &#8597; button (or its header) to sort; click again to reverse. Max <span id="maxrowLbl"></span> rows drawn; exports write the full filtered set.</div>
+    </div>
+
+    <div class="card hide" id="detailCard">
+      <h3>Detail <span class="lnk" id="detCopy" style="float:right;margin-left:12px">copy</span><span class="lnk" id="detClose" style="float:right">close &times;</span></h3>
+      <div id="detBody"></div>
+    </div>
+  </div>
+</div>
+
+<script language="JScript">
+"use strict";
+
+var APP_VERSION = "0.2.1";
+var APP_NAME = "LoginActivityTriage";
+var ENGINE_EXE = "LoginActivityTriageCli.exe";
+var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
+var GITHUB = "https://github.com/" + SELF_REPO;
+var MAXROWS = 5000;
+
+var EXE = "", ENGINE_VER = "", ELEVATED = false;
+var RESDIR = "";                     // loaded results folder
+var SUMMARY = null;                  // summary.json
+var DATA = {};                       // dataset name -> {head, idx, rows}
+var VIEW = "findings";
+var SORT = {};                       // view -> {col, dir}
+var F = { q:"", host:"", tech:"", sev:"all", from:0, to:0, iocOnly:false, remOnly:false, failOnly:false, pin:null, story:null };
+var IOCS = [];
+var BUSY = false;
+var DETROW = null, DETVIEW = "";
+var qTimer = null;
+var SELFTEST = null;                 // {dir, errors:[]} when launched with /selftest
+var JSERRORS = [];
+
+var FILES = { findings:"findings.csv", sessions:"sessions.csv", events:"events.csv", users:"users.csv",
+              ips:"sourceips.csv", hosts:"hosts.csv", remotes:"remotehosts.csv", files:"files.csv" };
+
+/* Column sets per view (null = every column in the CSV). The engine CSVs carry more columns;
+   everything appears in the detail pane and in exports. */
+var VIEWS = {
+  findings: { ds:"findings", cols:["Severity","Rule","Timestamp","Host","User","SourceIp","Count","Mitre","Description"],
+              sort:["Severity",-1], time:"Timestamp", host:"Host" },
+  sessions: { ds:"sessions", cols:["SessionRef","Start","End","DurationMinutes","Technique","Variant","Direction","Host","TargetHost","TargetHostName","User","InferredUser","CredentialsUsed","SourceIp","SourceHost","Confidence","Detail","Commands","EventCount"],
+              sort:["Start",1], time:"Start", host:"Host", tech:"Technique" },
+  timeline: { ds:"events", cols:["Timestamp","Hostname","EventId","EventType","Technique","Result","User","Domain","SourceIp","Workstation","LogonType","AuthPackage","LogonId","SessionRef","Process","CommandLine","Details"],
+              sort:["Timestamp",1], time:"Timestamp", host:"Hostname", tech:"Technique" },
+  users:    { ds:"users", cols:null, sort:["SuspicionScore",-1], time:"FirstSeen" },
+  ips:      { ds:"ips", cols:null, sort:["SuspicionScore",-1], time:"FirstSeen" },
+  hosts:    { ds:"hosts", cols:null, sort:["RemoteExec",-1], time:"FirstSeen", host:"Host" },
+  remotes:  { ds:"remotes", cols:null, sort:["Connections",-1], time:"FirstSeen", host:"FromHosts" },
+  files:    { ds:"files", cols:null, sort:null }
+};
+var SEVRANK = { Critical:4, High:3, Medium:2, Low:1, Info:0 };
+
+/* Common Windows time-zone ids for the after-hours rule (the engine also accepts IANA ids). */
+var TZS = ["auto","utc","local","UTC+08:00","UTC+09:00","UTC+10:00","UTC+05:30","UTC+01:00","UTC-05:00","UTC-08:00","GMT Standard Time","W. Europe Standard Time","Central Europe Standard Time","Romance Standard Time",
+  "E. Europe Standard Time","South Africa Standard Time","Arabian Standard Time","India Standard Time","Singapore Standard Time",
+  "China Standard Time","Tokyo Standard Time","W. Australia Standard Time","Cen. Australia Standard Time","AUS Central Standard Time",
+  "E. Australia Standard Time","AUS Eastern Standard Time","New Zealand Standard Time","Hawaiian Standard Time","Alaskan Standard Time",
+  "Pacific Standard Time","Mountain Standard Time","US Mountain Standard Time","Central Standard Time","Eastern Standard Time",
+  "Atlantic Standard Time","E. South America Standard Time","Argentina Standard Time"];
+
+/* ---------- tiny helpers ---------- */
+function $(id){ return document.getElementById(id); }
+function esc(s){ if(s==null) return ""; s=String(s);
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function nf(n){ n=String(n); var r="",c=0; for(var k=n.length-1;k>=0;k--){ r=n.charAt(k)+r; c++; if(c%3===0&&k>0&&n.charAt(k-1)!=="-") r=","+r; } return r; }
+function trimStr(s){ return String(s==null?"":s).replace(/^\s+|\s+$/g,""); }
+function baseName(p){ if(!p) return ""; p=String(p); var i=Math.max(p.lastIndexOf("\\"),p.lastIndexOf("/")); return i>=0?p.substring(i+1):p; }
+function parentDir(p){ var i=String(p).lastIndexOf("\\"); return i>=0?String(p).substring(0,i):String(p); }
+function showEl(id,vis){ var e=$(id); if(!e) return; var c=e.className.replace(/\s*\bhide\b/g,""); e.className = vis ? c : (c+" hide"); }
+function setStatus(msg,cls){ var el=$("status"); el.innerHTML=esc(msg); el.className=cls||"muted"; }
+function appendLog(t){ var el=$("log"); if(el.getAttribute("data-ph")==="1"){ el.innerHTML=""; el.setAttribute("data-ph","0"); }
+  el.innerHTML+=esc(t)+"\n"; el.scrollTop=el.scrollHeight; }
+function showLog(){ $("log").style.display="block"; $("logToggle").innerHTML="Hide log"; }
+function dayNum(s){ if(!s) return 0; var m=String(s).match(/(\d{4})-(\d{1,2})-(\d{1,2})/); if(!m) return 0;
+  function p(x){ x=String(x); return x.length<2?("0"+x):x; } return Number(m[1]+p(m[2])+p(m[3])); }
+function msOf(s){ var m=String(s||"").match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(\.\d+)?/);
+  if(!m) return 0; return Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]) + (m[7]?Math.round(parseFloat(m[7])*1000):0); }
+function fmtTs(s){ s=String(s||""); var m=s.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(\.\d+)?Z$/); return m ? (m[1]+" "+m[2]+"Z") : s; }
+function nowStamp(){ var d=new Date(); function p(x){ return (x<10?"0":"")+x; }
+  return d.getUTCFullYear()+p(d.getUTCMonth()+1)+p(d.getUTCDate())+"_"+p(d.getUTCHours())+p(d.getUTCMinutes())+p(d.getUTCSeconds()); }
+function hostKey(h){ h=trimStr(h).replace(/^\\+/,"").replace(/\$$/,""); if(/^\d+\.\d+\.\d+\.\d+$/.test(h)) return h;
+  var d=h.indexOf("."); if(d>0) h=h.substring(0,d); return h.toUpperCase(); }
+function bareUser(u){ u=trimStr(u); var b=u.lastIndexOf("\\"); if(b>=0) u=u.substring(b+1); var a=u.indexOf("@"); if(a>0) u=u.substring(0,a); return u.toLowerCase(); }
+/* Comparable domain (NetBIOS / first DNS label, upper-case; "" when absent) - same rule as the engine's AccountKey. */
+function domainKey(d){ d=trimStr(d); if(!d || d==="-" || d==="." || /^workgroup$/i.test(d)) return ""; var i=d.indexOf("."); if(i>0) d=d.substring(0,i); return d.toUpperCase(); }
+function userDomain(u){ u=trimStr(u); var b=u.indexOf("\\"); if(b>0) return domainKey(u.substring(0,b)); var a=u.indexOf("@"); if(a>0) return domainKey(u.substring(a+1)); return ""; }
+function isNumStr(s){ return /^-?\d+(\.\d+)?$/.test(String(s)); }
+/* the engine prefixes spreadsheet-formula-looking values with an apostrophe; show the real value */
+function unguard(v){ v=(v==null?"":String(v)); return (v.length>1 && v.charAt(0)==="'" && /[=+\-@\t\r]/.test(v.charAt(1))) ? v.substring(1) : v; }
+
+/* ---------- file IO (UTF-8 via ADODB.Stream, ANSI fallback from network zones) ---------- */
+var FILE_IO="adodb";
+function zoneNote(){ appendLog("NOTE: running from a network location - zone policy blocks ADODB.Stream; falling back to ANSI file IO. Copy the app folder to a local path for full fidelity."); }
+function readUtf8(path){
+  if(FILE_IO==="adodb"){
+    try{ var st=new ActiveXObject("ADODB.Stream"); st.Type=2; st.Charset="utf-8"; st.Open(); st.LoadFromFile(path);
+      var parts=[]; while(!st.EOS){ parts.push(st.ReadText(65536)); } st.Close(); var t=parts.join("");
+      if(t.charCodeAt(0)===0xFEFF) t=t.substring(1); return t;
+    }catch(e){ if(!/safety settings|data source/i.test(e.message||"")) throw e; FILE_IO="fso"; zoneNote(); }
+  }
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var f=fso.OpenTextFile(path,1,false,0), out=f.AtEndOfStream?"":f.ReadAll(); f.Close();
+  if(out.length>=3 && out.charCodeAt(0)===239 && out.charCodeAt(1)===187 && out.charCodeAt(2)===191) out=out.substring(3);
+  return out;
+}
+function writeUtf8(path,text,bom){
+  if(FILE_IO==="adodb"){
+    try{ var st=new ActiveXObject("ADODB.Stream"); st.Type=2; st.Charset="utf-8"; st.Open(); st.WriteText(text);
+      if(!bom){ st.Position=0; st.Type=1; st.Position=3; var bin=st.Read(); st.Close();
+        var s2=new ActiveXObject("ADODB.Stream"); s2.Type=1; s2.Open(); s2.Write(bin); s2.SaveToFile(path,2); s2.Close(); return; }
+      st.SaveToFile(path,2); st.Close(); return;
+    }catch(e){ if(!/safety settings|data source/i.test(e.message||"")) throw e; FILE_IO="fso"; zoneNote(); }
+  }
+  var fso=new ActiveXObject("Scripting.FileSystemObject"); var f=fso.CreateTextFile(path,true,false); f.Write(text); f.Close();
+}
+function fileExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FileExists(p); }catch(e){ return false; } }
+function folderExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FolderExists(p); }catch(e){ return false; } }
+function ensureFolder(p){ var fso=new ActiveXObject("Scripting.FileSystemObject"); if(!p||fso.FolderExists(p)) return;
+  ensureFolder(fso.GetParentFolderName(p)); fso.CreateFolder(p); }
+function uid(){ return new Date().getTime()+""+Math.floor(Math.random()*100000); }
+function batEsc(s){ return String(s).replace(/%/g,"%%"); }
+
+/* ---------- process execution (temp .bat; async with .done marker so the UI never freezes) ---------- */
+function runBat(lines, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), sh=new ActiveXObject("WScript.Shell");
+  var tmp=fso.GetSpecialFolder(2)+"", stamp=uid(), bat=tmp+"\\lat_"+stamp+".bat", logp=tmp+"\\lat_"+stamp+".log";
+  var f=fso.CreateTextFile(bat,true); f.WriteLine("@echo off");
+  for(var i=0;i<lines.length;i++) f.WriteLine(lines[i].replace(/__LOG__/g,logp)); f.Close();
+  var rc=sh.Run('cmd /c ""'+bat+'""', show?1:0, true), txt="";
+  try{ if(fso.FileExists(logp)) txt=readUtf8(logp); }catch(e){ txt="(could not read log: "+e.message+")"; }
+  try{ fso.DeleteFile(bat); }catch(e2){} try{ if(fso.FileExists(logp)) fso.DeleteFile(logp); }catch(e3){}
+  return { rc:rc, log:txt };
+}
+function runBatAsync(lines, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), sh=new ActiveXObject("WScript.Shell");
+  var tmp=fso.GetSpecialFolder(2)+"", stamp=uid();
+  var ctx={ bat:tmp+"\\lat_"+stamp+".bat", log:tmp+"\\lat_"+stamp+".log", done:tmp+"\\lat_"+stamp+".done", stamp:stamp, elapsed:0, graceSecs:10 };
+  var f=fso.CreateTextFile(ctx.bat,true); f.WriteLine("@echo off");
+  for(var i=0;i<lines.length;i++) f.WriteLine(lines[i].replace(/__LOG__/g,ctx.log));
+  f.WriteLine('echo done> "'+ctx.done+'"'); f.Close();
+  sh.Run('cmd /c ""'+ctx.bat+'""', show?1:0, false);
+  return ctx;
+}
+function procAliveByTag(tag){
+  try{ var w=GetObject("winmgmts:\\\\.\\root\\cimv2");
+    return w.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE CommandLine LIKE '%lat_"+tag+"%'").Count>0; }catch(e){ return true; }
+}
+function pollDone(ctx){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var finished=fso.FileExists(ctx.done);
+  if(!finished && ctx.elapsed>=ctx.graceSecs && !procAliveByTag(ctx.stamp)) finished=true;
+  if(finished){
+    var log=""; try{ if(fso.FileExists(ctx.log)) log=readUtf8(ctx.log); }catch(e){ log="(could not read log: "+e.message+")"; }
+    try{ fso.DeleteFile(ctx.bat); }catch(e1){} try{ fso.DeleteFile(ctx.done); }catch(e2){} try{ if(fso.FileExists(ctx.log)) fso.DeleteFile(ctx.log); }catch(e3){}
+    ctx.onDone(log); return;
+  }
+  ctx.elapsed+=1;
+  if(ctx.elapsed>4*3600){ if(ctx.onTimeout) ctx.onTimeout(); return; }
+  if(ctx.onTick) ctx.onTick(ctx.elapsed);
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+
+/* ---------- engine location / version / build / download ---------- */
+function htaFolder(){
+  try{ var cl=latHta.commandLine+""; var m=cl.match(/"([^"]+\.hta)"/i); if(!m) m=cl.match(/([A-Za-z]:\\[^"]+\.hta)/i);
+    if(m) return parentDir(m[1]); }catch(e){}
+  try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); return parentDir(p); }catch(e2){}
+  return "";
+}
+function repoRoot(){ var d=htaFolder(); var up=parentDir(d);
+  return fileExists(up+"\\src\\LoginActivityTriage.Cli\\LoginActivityTriage.Cli.csproj") ? up :
+         (fileExists(d+"\\src\\LoginActivityTriage.Cli\\LoginActivityTriage.Cli.csproj") ? d : ""); }
+function resolveExe(){
+  var dir=htaFolder(), c=[], root=repoRoot();
+  if(dir){ c.push(dir+"\\"+ENGINE_EXE); c.push(dir+"\\bin\\"+ENGINE_EXE); c.push(dir+"\\LoginActivityTriage\\"+ENGINE_EXE); }
+  if(root){ var rel=root+"\\src\\LoginActivityTriage.Cli\\bin\\Release\\net8.0-windows\\win-x64\\";
+    c.push(root+"\\bin\\"+ENGINE_EXE); c.push(rel+"publish\\"+ENGINE_EXE); c.push(rel+ENGINE_EXE); }
+  c.push("C:\\Tools\\LoginActivityTriage\\"+ENGINE_EXE);
+  for(var i=0;i<c.length;i++){ if(fileExists(c[i])){ EXE=c[i]; return true; } }
+  EXE=""; return false;
+}
+function checkEngine(){
+  ENGINE_VER="";
+  if(!resolveExe()){
+    $("engpill").className="pill bad"; $("engpill").innerHTML="engine: not found";
+    $("exeline").innerHTML="Engine <b>"+ENGINE_EXE+"</b> not found next to this app, in .\\bin, in the repo build output or C:\\Tools\\LoginActivityTriage. "+
+      "Use <b>Download engine</b>, or copy the exe next to this .hta.";
+    showEl("getBtn", true);
+    return false;
+  }
+  var r=runBat(['set DOTNET_ROLL_FORWARD=Major','"'+batEsc(EXE)+'" --version > "__LOG__" 2>&1'], false);
+  var m=String(r.log).match(/LoginActivityTriageCli\s+([0-9][0-9.]*)/);
+  if(m){ ENGINE_VER=m[1]; $("engpill").className="pill ok"; $("engpill").innerHTML="engine v"+ENGINE_VER; $("engpill").title=EXE; }
+  else { $("engpill").className="pill bad"; $("engpill").innerHTML="engine: will not start";
+    appendLog("Engine at "+EXE+" did not report a version. It needs the .NET 8 (or newer) runtime:\n"+r.log); showLog(); }
+  $("exeline").innerHTML="Engine: <span class='mono'>"+esc(EXE)+"</span>";
+  showEl("getBtn", false);
+  return !!m;
+}
+function downloadEngine(){
+  var dest=htaFolder()+"\\"+ENGINE_EXE, dq=String(dest).replace(/'/g,"''");
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), ps1=fso.GetSpecialFolder(2)+"\\latdl_"+uid()+".ps1";
+  var L=["$ErrorActionPreference='Stop'","[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
+    "$r=Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/"+SELF_REPO+"/releases/latest' -Headers @{ 'User-Agent'='"+SELF_HTA+"' }",
+    "$a=$r.assets | Where-Object { $_.name -eq '"+ENGINE_EXE+"' } | Select-Object -First 1",
+    "if(-not $a){ throw 'The latest release has no "+ENGINE_EXE+" asset' }",
+    "Invoke-WebRequest -UseBasicParsing -Uri $a.browser_download_url -OutFile '"+dq+"' -Headers @{ 'User-Agent'='"+SELF_HTA+"' }",
+    "Write-Output ('DL_OK '+$r.tag_name)"];
+  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(e){ setStatus("Could not stage the download: "+e.message,"err"); return; }
+  setStatus("Downloading the engine from GitHub...","muted");
+  var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1'], false);
+  try{ fso.DeleteFile(ps1); }catch(e0){}
+  if(/DL_OK/.test(r.log) && checkEngine()) setStatus("Engine downloaded: "+EXE,"ok");
+  else { appendLog("--- engine download ---\n"+r.log); showLog();
+    setStatus("Download failed (offline, or no release published yet). Copy "+ENGINE_EXE+" next to this .hta.","err"); }
+}
+function checkElevation(){
+  try{ var r=runBat(['net session > nul 2>&1 && echo ELEVATED> "__LOG__"'], false); ELEVATED=/ELEVATED/.test(r.log); }catch(e){ ELEVATED=false; }
+  return ELEVATED;
+}
+function relaunchElevated(){
+  try{ var p=selfPath(); new ActiveXObject("Shell.Application").ShellExecute("mshta.exe", '"'+p+'"', "", "runas", 1); window.close(); }
+  catch(e){ setStatus("Elevation cancelled or failed: "+e.message,"err"); }
+}
+
+/* ---------- hostname + _Processed output convention ---------- */
+var HOST_TOUCHED=false, OUT_TOUCHED=false;
+function sanitHost(s){ return String(s||"").replace(/[^A-Za-z0-9._\-]/g,"-").replace(/^[\-.]+|[\-.]+$/g,""); }
+function machineName(){ try{ return new ActiveXObject("WScript.Network").ComputerName+""; }catch(e){ return ""; } }
+function guessHost(p){
+  p=String(p||"");
+  var m=p.match(/Collection-([A-Za-z0-9][A-Za-z0-9\-_\.]*?)-\d{4}-\d{2}-\d{2}/i); if(m) return m[1];
+  m=p.match(/[\\\/]_Processed[\\\/]([^\\\/]+)[\\\/]/i); if(m) return m[1];
+  if(/^[a-z]:\\(windows|users)(\\|$)/i.test(p) || p==="live") return machineName();
+  return "";
+}
+function defaultOutDir(){ var h=sanitHost($("hostName").value); if(!h) return "";
+  var base=htaFolder(); if(!base){ try{ base=new ActiveXObject("Scripting.FileSystemObject").GetSpecialFolder(2)+""; }catch(e){ return ""; } }
+  return base+"\\_Processed\\"+h+"\\"+APP_NAME; }
+function syncOutDir(){ if(OUT_TOUCHED) return; var d=defaultOutDir(); if(d) $("outDir").value=d; }
+function hostGuessFrom(p){ if(!HOST_TOUCHED || !trimStr($("hostName").value)){ var g=guessHost(p); if(g) $("hostName").value=sanitHost(g); } syncOutDir(); }
+function requireHost(){ var h=sanitHost($("hostName").value);
+  if(!h){ setStatus("Target hostname is required - it names the output folder _Processed\\<host>\\"+APP_NAME+". For a multi-host collection use a case label (e.g. CASE-ALL-HOSTS).","err"); try{ $("hostName").focus(); }catch(e){} return ""; }
+  if(!trimStr($("outDir").value)) syncOutDir(); return h; }
+
+/* ---------- processing ---------- */
+function tzArg(){ var v=$("optTz").value||"utc"; return v; }
+function buildArgs(mode, inp, outdir){
+  var a=[];
+  if(mode==="live") a.push("--live"); else a.push(mode==="f"?"-f":"-d", '"'+batEsc(inp)+'"');
+  a.push("-o",'"'+batEsc(outdir)+'"', "--tz",'"'+batEsc(tzArg())+'"');
+  var hrs=trimStr($("optHours").value); if(/^\d{1,2}-\d{1,2}$/.test(hrs) && hrs!=="7-19") a.push("--hours",hrs);
+  if(!$("optWeekend").checked) a.push("--no-weekend");
+  if($("optNoise").checked) a.push("--keep-noise");
+  var fr=trimStr($("optFrom").value), to=trimStr($("optTo").value);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(fr)) a.push("--from",fr+"T00:00:00Z");
+  if(/^\d{4}-\d{2}-\d{2}$/.test(to)) a.push("--to",to+"T23:59:59.999Z");
+  return a.join(" ");
+}
+function processRun(){
+  var mode=$("inMode").value, inp=trimStr($("inPath").value);
+  if(!requireHost()) return;
+  var outdir=trimStr($("outDir").value);
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(mode==="d" && (!inp || !fso.FolderExists(inp))){ setStatus("Directory not found: "+inp,"err"); return; }
+  if(mode==="f" && (!inp || !fso.FileExists(inp))){ setStatus("File not found: "+inp,"err"); return; }
+  if(!outdir){ setStatus("Set an output directory","err"); return; }
+  if(!EXE && !checkEngine()){ setStatus(ENGINE_EXE+" not found - build or download the engine first.","err"); return; }
+  if(BUSY){ setStatus("A run is already in progress - wait for it to finish.","err"); return; }
+  if(mode==="live" && !ELEVATED && !confirm("This app is not elevated, so the live Security log (logons, PsExec service installs, share access) cannot be read.\n\nContinue with the other logs only? (Cancel, then 'Relaunch elevated', for a full run.)")) return;
+  try{ ensureFolder(outdir); }catch(e){ setStatus("Cannot create output folder: "+e.message,"err"); return; }
+  var cmd='"'+batEsc(EXE)+'" '+buildArgs(mode, inp, outdir);
+  appendLog("Running the engine:\n"+cmd+"\nA console window shows progress; results load automatically when it finishes."); showLog();
+  BUSY=true; $("procBtn").disabled=true;
+  var ctx=runBatAsync([
+    'set DOTNET_ROLL_FORWARD=Major',
+    'title Login Activity Triage engine',
+    'echo Login Activity Triage engine - this window closes when finished.',
+    'echo.',
+    cmd,
+    // Parenthesised: "echo X=0> file" would make cmd read "0>" as a handle redirection and drop the line.
+    '(echo EXITCODE=%ERRORLEVEL%)> "__LOG__"'
+  ], true);
+  var t0=new Date().getTime();
+  ctx.onTick=function(s){ setStatus("Engine running... "+s+"s elapsed (app stays responsive; results load when done)","muted"); };
+  ctx.onTimeout=function(){ BUSY=false; $("procBtn").disabled=false; setStatus("Engine still running after 4 h - stopped watching. Check the console / output folder.","err"); };
+  ctx.onDone=function(log){ BUSY=false; $("procBtn").disabled=false; processDone(log, outdir, mode==="live"?"(live event logs)":inp, (new Date().getTime()-t0)/1000, t0); };
+  setStatus("Engine starting...","muted");
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+/* A run counts only with a summary.json the engine published during this run (it is published
+   last, and only after a successful run) and no failing exit code. A failure leaves the previous
+   results - which the engine keeps untouched - unloaded and unrecorded. */
+function processDone(log, outdir, input, secs, startedMs){
+  var rc=(String(log).match(/EXITCODE=(\d+)/)||[])[1];
+  var runlog=outdir+"\\run.log"; if(fileExists(runlog)){ try{ appendLog("--- engine run.log ---\n"+readUtf8(runlog)); }catch(e){} }
+  var sum=null; try{ sum=JSON.parse(readUtf8(outdir+"\\summary.json")); }catch(e1){}
+  var gen=sum && sum.generatedUtc ? Date.parse(String(sum.generatedUtc).replace(/\.\d+Z$/,"Z")) : NaN;
+  var fresh=!!sum && !isNaN(gen) && (!startedMs || gen >= startedMs-120000);
+  // No exit marker (console closed after the run, marker write failed): a summary published by
+  // this run is itself the engine's proof of a completed, successful run.
+  if(rc==null && fresh) rc="0";
+  var prior=priorResultsNote(outdir);
+  if(rc!=="0"){
+    var why = rc==="2" ? "No .evtx files were found at "+input
+            : rc==="4" ? "None of the input logs could be read (not EVTX, corrupt or access denied)"
+            : rc==="1" ? "The engine rejected the arguments"
+            : rc==="3" ? "The engine failed"
+            : "The engine did not report an exit code (closed or killed?)";
+    setStatus(why+" (exit "+(rc||"?")+") - see the log. "+prior, "err"); showLog(); return;
+  }
+  if(!fresh){
+    setStatus("The engine exited 0 but did not publish a summary.json for this run - see the log. "+prior, "err"); showLog(); return;
+  }
+  loadResults(outdir);
+  writeRunInfo(outdir, input);
+  setStatus("Done in "+Math.round(secs)+"s - results loaded from "+outdir, "ok");
+}
+function priorResultsNote(outdir){
+  try{ if(!fileExists(outdir+"\\summary.json")) return "No results were written.";
+    var s=JSON.parse(readUtf8(outdir+"\\summary.json"));
+    return "The output folder still holds the PREVIOUS run's results (generated "+fmtTs(s.generatedUtc||"")+"); they were not loaded."; }
+  catch(e){ return "No results were loaded."; }
+}
+
+/* ---------- run provenance (runinfo.json, family convention) ---------- */
+function writeRunInfo(outdir, input){
+  try{
+    var p=String(outdir).replace(/[\\\/]+$/,"")+"\\runinfo.json", arr=[];
+    try{ if(fileExists(p)){ var old=JSON.parse(readUtf8(p)); if(old && old.length!=null) arr=old; } }catch(e0){}
+    var d=new Date(); function p2(x){ return (x<10?"0":"")+x; }
+    var iso=d.getUTCFullYear()+"-"+p2(d.getUTCMonth()+1)+"-"+p2(d.getUTCDate())+"T"+p2(d.getUTCHours())+":"+p2(d.getUTCMinutes())+":"+p2(d.getUTCSeconds());
+    var ent={ app:APP_NAME, appVersion:APP_VERSION, engineVersion:ENGINE_VER, host:sanitHost($("hostName").value),
+              input:String(input||""), finishedUtc:iso, files:["events.csv","sessions.csv","findings.csv","users.csv","sourceips.csv","hosts.csv","files.csv","summary.json"],
+              summary:buildRunSummary() };
+    if(CASE_FROM) ent.winFrom=CASE_FROM; if(CASE_TO) ent.winTo=CASE_TO;
+    arr.push(ent); writeUtf8(p, JSON.stringify(arr,null,2));
+  }catch(e){ appendLog("runinfo.json not written: "+e.message); }
+}
+function buildRunSummary(){
+  var fd=DATA.findings; if(!fd) return null;
+  var c={Critical:0,High:0,Medium:0,Low:0,Info:0}, freq={}, titles=[], iS=fd.idx["Severity"], iR=fd.idx["Rule"];
+  for(var i=0;i<fd.rows.length;i++){ var sv=fd.rows[i][iS]; if(sv in c) c[sv]++;
+    if(sv==="Critical"||sv==="High"){ var k="r_"+fd.rows[i][iR]; if(!(k in freq)){ freq[k]=0; titles.push(fd.rows[i][iR]); } freq[k]++; } }
+  titles.sort(function(a,b){ return freq["r_"+b]-freq["r_"+a]; });
+  var top=[]; for(var j=0;j<titles.length && top.length<3;j++) top.push(titles[j]+" (x"+freq["r_"+titles[j]]+")");
+  return { detections:fd.rows.length, crit:c.Critical, high:c.High, med:c.Medium, low:c.Low,
+           sessions:DATA.sessions?DATA.sessions.rows.length:0, events:SUMMARY?SUMMARY.eventsKept:null, top:top };
+}
+
+/* ---------- CSV parser (RFC4180, quoted newlines) ---------- */
+function countQuotes(s){ var c=0, idx=-1; while((idx=s.indexOf('"',idx+1))>=0) c++; return c; }
+function parseCSVLine(line){
+  if(line.indexOf('"')<0) return line.split(",");
+  var out=[], field="", q=false, i=0, n=line.length;
+  while(i<n){ var ch=line.charAt(i);
+    if(q){ if(ch==='"'){ if(line.charAt(i+1)==='"'){ field+='"'; i+=2; continue; } q=false; i++; continue; } field+=ch; i++; continue; }
+    if(ch==='"'){ q=true; i++; continue; }
+    if(ch===','){ out.push(field); field=""; i++; continue; }
+    field+=ch; i++; }
+  out.push(field); return out;
+}
+function parseCSV(text){
+  if(text.charCodeAt(0)===0xFEFF) text=text.substring(1);
+  var lines=text.split("\n"), rows=[], i=0, n=lines.length;
+  while(i<n){ var line=lines[i]; i++; var qc=countQuotes(line);
+    while((qc%2)===1 && i<n){ line+="\n"+lines[i]; qc+=countQuotes(lines[i]); i++; }
+    if(line.charAt(line.length-1)==='\r') line=line.substring(0,line.length-1);
+    if(line==="") continue; rows.push(parseCSVLine(line)); }
+  return rows;
+}
+var FULLEVENTS=false;
+/* The Timeline uses the compact triage subset (timeline.csv) unless the analyst asks for everything. */
+function eventsFile(){ return (!FULLEVENTS && fileExists(RESDIR+"\\timeline.csv")) ? "timeline.csv" : "events.csv"; }
+function fileSizeOf(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").GetFile(p).Size; }catch(e){ return -1; } }
+function loadDataset(name){
+  var p=RESDIR+"\\"+(name==="events"?eventsFile():FILES[name]);
+  if(!fileExists(p)) return { head:[], idx:{}, rows:[], missing:true };
+  var raw=parseCSV(readUtf8(p)), head=raw.length?raw.shift():[], idx={};
+  for(var h=0;h<head.length;h++) idx[trimStr(head[h])]=h;
+  for(var r=0;r<raw.length;r++){ var row=raw[r]; for(var c=0;c<row.length;c++) if(row[c].charAt(0)==="'") row[c]=unguard(row[c]); }
+  return { head:head, idx:idx, rows:raw };
+}
+function ds(name){ if(!DATA[name]) DATA[name]=loadDataset(name); return DATA[name]; }
+function cell(d,row,col){ var i=d.idx[col]; return (i==null||i>=row.length)?"":row[i]; }
+
+/* ---------- results loading ---------- */
+function resultsFolderOf(p){
+  p=String(p||"").replace(/[\\\/]+$/,"");
+  if(folderExists(p) && fileExists(p+"\\summary.json")) return p;
+  if(fileExists(p) && fileExists(parentDir(p)+"\\summary.json")) return parentDir(p);
+  return "";
+}
+function loadResults(dir){ trace("loadResults "+dir);
+  try{
+    RESDIR=dir; DATA={}; SUMMARY=null; F.pin=null; F.story=null; DETROW=null; showEl("detailCard",false);
+    FULLEVENTS=false; try{ $("fullEv").checked=false; }catch(ef){}
+    try{ SUMMARY=JSON.parse(readUtf8(dir+"\\summary.json")); }catch(e){ appendLog("summary.json unreadable: "+e.message); }
+    ds("findings"); ds("sessions"); ds("users"); ds("ips"); ds("hosts"); ds("remotes"); ds("files");
+    loadKnown(dir);
+    // The window these results were imported with becomes the date window (engine + view filter).
+    if(SUMMARY && (SUMMARY.from || SUMMARY.to)){ syncDate("from", SUMMARY.from||"", true); syncDate("to", SUMMARY.to||"", true); }
+    if(!HOST_TOUCHED || !trimStr($("hostName").value)){ var g=guessHost(dir+"\\"); if(g) $("hostName").value=sanitHost(g); }
+    if(!OUT_TOUCHED){ $("outDir").value=dir; }
+    if(SUMMARY && SUMMARY.input && SUMMARY.mode!=="live"){ try{ $("inPath").value=SUMMARY.input; $("inMode").value=SUMMARY.mode==="file"?"f":"d"; }catch(ei){} }
+    $("srcpill").innerHTML=esc(resultsLabel()); $("srcpill").title=dir; $("srcpill").className="pill ok";
+    showEl("results",true); showEl("htmlBtn", fileExists(dir+"\\report-findings.html")); showEl("tleBtn", fileExists(dir+"\\events.csv"));
+    populateHostSel(); populateTechSel();
+    renderOverview();
+    applyIocs(true);
+    setView(DATA.findings.rows.length ? "findings" : "sessions");
+    setStatus("Loaded "+nf(DATA.findings.rows.length)+" finding(s) and "+nf(DATA.sessions.rows.length)+" remote session(s) from "+dir,"ok");
+  }catch(e){ setStatus("Could not load results: "+e.message,"err"); appendLog("load error: "+(e.stack||e.message)); }
+}
+/* Host filter lists. LOCALHOSTS = systems whose logs were collected. TARGETS = outbound session
+   destinations, an address and the name a credential hand-off resolved for it merged into one
+   entry: {key, label, n, keys:{hostKey:1...}}. ALIAS maps a name key to its address key. */
+var LOCALHOSTS = [], TARGETS = [], TARGETBY = {}, ALIAS = {};
+function populateHostSel(){
+  var seen={}, i, h;
+  LOCALHOSTS=[];
+  if(SUMMARY && SUMMARY.hosts) for(i=0;i<SUMMARY.hosts.length;i++){ h=hostKey(SUMMARY.hosts[i].host); if(h && !seen[h]){ seen[h]=1; LOCALHOSTS.push(h); } }
+  var hd=DATA.hosts; if(hd) for(i=0;i<hd.rows.length;i++){ h=hostKey(cell(hd,hd.rows[i],"Host")); if(h && !seen[h]){ seen[h]=1; LOCALHOSTS.push(h); } }
+  LOCALHOSTS.sort();
+  TARGETS=[]; TARGETBY={}; ALIAS={};
+  var sd=DATA.sessions, out=[], r, addr, name;
+  if(sd) for(i=0;i<sd.rows.length;i++){ r=sd.rows[i]; if(cell(sd,r,"Direction")!=="Outbound") continue;
+    addr=cell(sd,r,"TargetHost"); name=cell(sd,r,"TargetHostName"); if(!addr && !name) continue;
+    out.push(r); if(addr && name) ALIAS[hostKey(name)]=hostKey(addr); }
+  for(i=0;i<out.length;i++){ r=out[i]; addr=cell(sd,r,"TargetHost"); name=cell(sd,r,"TargetHostName");
+    var k=hostKey(addr||name); if(ALIAS[k]) k=ALIAS[k];
+    var t=TARGETBY[k]; if(!t){ t=TARGETBY[k]={ key:k, addr:"", name:"", n:0, keys:{} }; t.keys[k]=1; TARGETS.push(t); }
+    t.n++; if(addr && !t.addr) t.addr=addr; if(name && !t.name && name!==t.addr) t.name=name;
+    if(addr) t.keys[hostKey(addr)]=1; if(name) t.keys[hostKey(name)]=1; }
+  TARGETS.sort(function(a,b){ return (b.n-a.n) || (a.key<b.key?-1:1); });
+  F.host=""; F.hostKeys=null; fillHostSel(VIEW);
+}
+/* Rebuilds the host dropdown for a tab; a selection that does not exist there is cleared. */
+function fillHostSel(view){
+  var sel=$("hostSel"), i, o, g, valid={"":1};
+  sel.innerHTML="";
+  var withTargets=(view==="sessions" && TARGETS.length>0);
+  o=document.createElement("option"); o.value="";
+  o.text="all hosts ("+LOCALHOSTS.length+(withTargets?" local, "+TARGETS.length+" remote":"")+")"; sel.appendChild(o);
+  g=withTargets ? document.createElement("optgroup") : sel; if(withTargets){ g.label="Local hosts (logs collected)"; sel.appendChild(g); }
+  for(i=0;i<LOCALHOSTS.length;i++){ o=document.createElement("option"); o.value=LOCALHOSTS[i]; o.text=LOCALHOSTS[i]; g.appendChild(o); valid[LOCALHOSTS[i]]=1; }
+  if(withTargets){ g=document.createElement("optgroup"); g.label="Remote targets (sessions)"; sel.appendChild(g);
+    for(i=0;i<TARGETS.length;i++){ var tg=TARGETS[i], kn=tg.addr ? KNOWN.map[tg.addr.toLowerCase()] : null;
+      if(valid[tg.key]) continue;
+      o=document.createElement("option"); o.value=tg.key;
+      o.text=(tg.addr||tg.name||tg.key)+(tg.addr && tg.name ? " — "+tg.name : (kn ? " — "+kn.name : ""))+" ("+tg.n+")";
+      g.appendChild(o); valid[tg.key]=1; } }
+  if(!valid[F.host]){ F.host=""; F.hostKeys=null; }
+  sel.value=F.host;
+}
+/* Every host key that means the chosen host: a target's address and names; a local host plus the
+   addresses that resolved to its name. */
+function hostKeysFor(k){
+  if(!k) return null;
+  var keys={}, a; keys[k]=1;
+  if(TARGETBY[k]) for(a in TARGETBY[k].keys) if(TARGETBY[k].keys.hasOwnProperty(a)) keys[a]=1;
+  if(ALIAS.hasOwnProperty(k)) keys[ALIAS[k]]=1;
+  for(a in KNOWN.map) if(KNOWN.map.hasOwnProperty(a)){ // Known hosts: an IP and its name mean the same host
+    if(hostKey(KNOWN.map[a].name)===k) keys[hostKey(a)]=1;
+    if(hostKey(a)===k) keys[hostKey(KNOWN.map[a].name)]=1; }
+  return keys;
+}
+/* Host filter: the row's own host column; on Remote sessions also its target (address or resolved
+   name); on Remote hosts, any of the local hosts that connected. */
+function hostMatch(view,d,row){
+  var V=VIEWS[view], keys=F.hostKeys||hostKeysFor(F.host), i;
+  if(view==="remotes"){ var fh=String(cell(d,row,"FromHosts")).split(";"); for(i=0;i<fh.length;i++) if(keys[hostKey(fh[i])]) return true; return false; }
+  if(keys[hostKey(cell(d,row,V.host))]) return true;
+  return view==="sessions" && !!(keys[hostKey(cell(d,row,"TargetHost"))] || keys[hostKey(cell(d,row,"TargetHostName"))]);
+}
+function populateTechSel(){
+  var sel=$("techSel"), seen={}, vals=[], sd=DATA.sessions, i;
+  if(sd) for(i=0;i<sd.rows.length;i++){ var t=cell(sd,sd.rows[i],"Technique"); if(t && !seen[t]){ seen[t]=1; vals.push(t); } }
+  var extra=["RDP","PsExec","PS Remoting","WMI","DCOM","Scheduled task","Service install","SMB admin share","Log cleared","WinRS"];
+  for(i=0;i<extra.length;i++) if(!seen[extra[i]]){ seen[extra[i]]=1; vals.push(extra[i]); }
+  vals.sort(); sel.innerHTML="";
+  var o0=document.createElement("option"); o0.value=""; o0.text="all"; sel.add(o0);
+  for(i=0;i<vals.length;i++){ var o=document.createElement("option"); o.value=vals[i]; o.text=vals[i]; sel.add(o); }
+  F.tech="";
+}
+
+/* ---------- overview ---------- */
+function stat(n,l,cls,click){ return '<span class="stat'+(cls?" "+cls:"")+(click?' click" onclick="'+click:'')+'"><span class="n">'+esc(nf(n))+'</span><span class="l">'+esc(l)+'</span></span>'; }
+function bars(list, cls){
+  if(!list.length) return '<div class="muted" style="font-size:11px">none</div>';
+  var mx=list[0].n||1, h="";
+  for(var i=0;i<list.length;i++){ var it=list[i]; var w=Math.max(2,Math.round(it.n*100/mx));
+    h+='<div class="brow"><span class="blab'+(it.click?' lnk':'')+'" title="'+esc(it.label)+'"'+(it.click?' onclick="'+it.click+'"':'')+'>'+esc(it.label)+'</span>'+
+       '<span class="btrack"><span class="bfill '+(it.cls||cls||"")+'" style="width:'+w+'%"></span></span><span class="bval">'+esc(nf(it.n))+'</span></div>'; }
+  return h;
+}
+/* A value for a single-quoted JavaScript string inside a double-quoted HTML attribute, e.g.
+   onclick="pinTo('timeline','User','<value>')". The browser decodes HTML entities BEFORE it parses
+   the handler, so the value is JavaScript-escaped first and HTML-attribute-encoded second: an
+   evidence string such as "&#39;);x=1;//" (a failed-logon user name) stays a literal string. */
+function jsq(s){
+  var js=String(s==null?"":s).replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/"/g,'\\"')
+    .replace(/\r/g,"\\r").replace(/\n/g,"\\n").replace(/\u2028/g,"\\u2028").replace(/\u2029/g,"\\u2029");
+  return js.replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/'/g,"&#39;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function renderOverview(){
+  var fd=DATA.findings, sd=DATA.sessions, sv={Critical:0,High:0,Medium:0,Low:0,Info:0}, i;
+  for(i=0;i<fd.rows.length;i++){ var s=cell(fd,fd.rows[i],"Severity"); if(s in sv) sv[s]++; }
+  var rex=0, rdp=0, outb=0;
+  for(i=0;i<sd.rows.length;i++){ var t=cell(sd,sd.rows[i],"Technique"), d=cell(sd,sd.rows[i],"Direction");
+    if(d==="Outbound") outb++; else if(t==="RDP") rdp++; else rex++; }
+  var S=SUMMARY||{};
+  var human=0, ud0=DATA.users; for(i=0;i<ud0.rows.length;i++) if(cell(ud0,ud0.rows[i],"SystemAccount")!=="Yes") human++;
+  var h=stat(S.eventsKept||0,"events")+stat((S.hosts||[]).length,"local hosts","","setView('hosts')")+stat(DATA.remotes.rows.length,"remote hosts","","setView('remotes')")+
+        stat(human,"accounts")+stat(DATA.ips.rows.length,"source IPs")+
+        stat(sv.Critical,"critical","crit","pickSev('Critical')")+stat(sv.High,"high","high","pickSev('High')")+stat(sv.Medium,"medium","med","pickSev('Medium')")+stat(sv.Low,"low","low","pickSev('Low')")+
+        stat(rex,"remote-exec sessions","rex","pickSessions('rex')")+stat(rdp,"RDP sessions","","pickSessions('RDP')")+stat(outb,"outbound sessions","","pickSessions('out')");
+  $("statbar").innerHTML=h;
+  $("ovMeta").innerHTML=esc("Input: "+(S.input||"?")+"  |  "+(S.firstEvent?fmtTs(S.firstEvent)+" -> "+fmtTs(S.lastEvent):"no events")+
+    "  |  after-hours "+(S.businessHours||"")+" "+zoneSummary(S)+"  |  engine v"+(S.version||"?")+", generated "+fmtTs(S.generatedUtc||"")+
+    (S.noiseDropped?"  |  machine/system-account noise dropped":"")+(S.filesFailed?"  |  "+S.filesFailed+" source(s) FAILED - see Import log":""));
+  $("ovTitle").innerHTML="Overview &mdash; "+esc(resultsLabel());
+
+  // findings by rule
+  var cnt={}, sevOf={}, keys=[];
+  for(i=0;i<fd.rows.length;i++){ var r=cell(fd,fd.rows[i],"Rule"); if(!(("r_"+r) in cnt)){ cnt["r_"+r]=0; keys.push(r); sevOf[r]=cell(fd,fd.rows[i],"Severity"); } cnt["r_"+r]++; }
+  keys.sort(function(a,b){ return (SEVRANK[sevOf[b]]-SEVRANK[sevOf[a]]) || (cnt["r_"+b]-cnt["r_"+a]); });
+  var L=[]; for(i=0;i<keys.length && i<12;i++) L.push({label:"["+sevOf[keys[i]]+"] "+keys[i], n:cnt["r_"+keys[i]], cls:(SEVRANK[sevOf[keys[i]]]>=3?"crit":""), click:"pinTo('findings','Rule','"+jsq(keys[i])+"')"});
+  $("topRules").innerHTML=bars(L);
+  // sessions by technique
+  var tc={}, tk=[];
+  for(i=0;i<sd.rows.length;i++){ var tt=cell(sd,sd.rows[i],"Technique")+(cell(sd,sd.rows[i],"Direction")==="Outbound"?" (outbound)":"");
+    if(!(("t_"+tt) in tc)){ tc["t_"+tt]=0; tk.push(tt); } tc["t_"+tt]++; }
+  tk.sort(function(a,b){ return tc["t_"+b]-tc["t_"+a]; });
+  var T=[]; for(i=0;i<tk.length;i++) T.push({label:tk[i], n:tc["t_"+tk[i]], cls:(/^RDP|outbound/.test(tk[i])?"":"rex"), click:"pinTo('sessions','Technique','"+jsq(tk[i].replace(/ \(outbound\)$/,""))+"')"});
+  $("topTech").innerHTML=bars(T);
+  // suspicious users / IPs
+  var U=[], ud=DATA.users, idd=DATA.ips;
+  var urows=ud.rows.slice(0).sort(function(a,b){ return (+cell(ud,b,"SuspicionScore"))-(+cell(ud,a,"SuspicionScore")); });
+  for(i=0;i<urows.length && U.length<6;i++){ var sc=+cell(ud,urows[i],"SuspicionScore"); if(sc<=0) break; U.push({label:"user "+cell(ud,urows[i],"User"), n:sc, click:"pinTo('timeline','User','"+jsq(cell(ud,urows[i],"User"))+"')"}); }
+  var irows=idd.rows.slice(0).sort(function(a,b){ return (+cell(idd,b,"SuspicionScore"))-(+cell(idd,a,"SuspicionScore")); });
+  for(i=0;i<irows.length && U.length<12;i++){ var sc2=+cell(idd,irows[i],"SuspicionScore"); if(sc2<=0) break; U.push({label:"IP "+khText(cell(idd,irows[i],"SourceIp"))+(cell(idd,irows[i],"PrivateAddress")==="No"?" (public)":""), n:sc2, click:"pinTo('timeline','SourceIp','"+jsq(cell(idd,irows[i],"SourceIp"))+"')"}); }
+  $("topSusp").innerHTML=bars(U) + '<div class="muted" style="font-size:10px;margin-top:4px">heuristic score 0-100: failures, host fan-out, remote exec, remote access tools, privilege, explicit credentials (used or used by others), public source</div>';
+}
+/* "per host: UTC+08:00 (12 hosts)" for auto runs; the forced zone otherwise. */
+function zoneSummary(S){
+  if(S.timeZone!=="auto") return "in "+(S.timeZone||"?");
+  var z=S.hostTimeZones||{}, cnt={}, keys=[], known=0, k;
+  for(k in z){ if(!z.hasOwnProperty(k)) continue; known++; if(!(z[k] in cnt)){ cnt[z[k]]=0; keys.push(z[k]); } cnt[z[k]]++; }
+  var parts=[]; for(var i=0;i<keys.length;i++) parts.push(keys[i]+(known>1?" x"+cnt[keys[i]]:""));
+  var total=(S.hosts||[]).length, missing=Math.max(0,total-known);
+  return "in each host's zone (event 6013): "+(parts.length?parts.join(", "):"none found")+(missing?"; UTC for "+missing+" host(s) without 6013":"");
+}
+/* A meaningful name for the loaded results: the single host, else the folder above "LoginActivityTriage". */
+function resultsLabel(){
+  var S=SUMMARY||{};
+  if(S.hosts && S.hosts.length===1) return S.hosts[0].host;
+  var b=baseName(RESDIR);
+  if(/^LoginActivityTriage$/i.test(b)) b=baseName(parentDir(RESDIR))+(S.hosts&&S.hosts.length?" ("+S.hosts.length+" hosts)":"");
+  return b||RESDIR;
+}
+function pickSev(s){ setView("findings"); F.sev=s; highlightSev(); render(); }
+function pickSessions(kind){ F.pin = kind==="RDP" ? {view:"sessions",col:"Technique",val:"RDP"} : (kind==="out" ? {view:"sessions",col:"Direction",val:"Outbound"} : {view:"sessions",col:"__rex",val:"1"});
+  setView("sessions"); }
+function pinTo(view, col, val){ F.pin={view:view,col:col,val:val}; F.story=null; setView(view); }
+
+/* ---------- filtering / rendering ---------- */
+/* Search text of a row: every cell plus the Known hosts names of its IPs. */
+function rowText(d,row){ if(row.__s==null || row.__sv!==KNOWN.v){ var s=row.join("\u0001"); if(KNOWN.n) s+=khNames(s); row.__s=s.toLowerCase(); row.__sv=KNOWN.v; } return row.__s; }
+function rowIoc(d,row){ if(!IOCS.length) return false; var v=IOCS.__v+"|"+KNOWN.v; if(row.__ioc!=null && row.__iocv===v) return row.__ioc;
+  var s=rowText(d,row), hit=false; for(var i=0;i<IOCS.length;i++){ if(s.indexOf(IOCS[i])>=0){ hit=true; break; } }
+  row.__ioc=hit; row.__iocv=v; return hit; }
+function pinMatch(d,row,pin){
+  if(pin.col==="__rex") return cell(d,row,"Technique")!=="RDP" && cell(d,row,"Direction")!=="Outbound";
+  var want=String(pin.val).toLowerCase();
+  if(pin.col==="User"){ // domain-aware: "OTHER\administrator" is not "CONTOSO\administrator"; a row without a domain may be either
+    var u=bareUser(want), wd=userDomain(pin.val);
+    var acct=function(user,dom){ if(bareUser(user)!==u) return false; if(!wd) return true; var ed=userDomain(user)||domainKey(dom); return !ed || ed===wd; };
+    return acct(cell(d,row,"User"),cell(d,row,"Domain")) || acct(cell(d,row,"SubjectUser"),cell(d,row,"SubjectDomain")); }
+  if(pin.col==="Hostname"||pin.col==="Host") return hostKey(cell(d,row,pin.col))===hostKey(want);
+  if(pin.col==="SourceIp"){ var v=String(cell(d,row,"SourceIp")).toLowerCase(); return v===want || (";"+v.replace(/\s/g,"")+";").indexOf(";"+want+";")>=0; }
+  return String(cell(d,row,pin.col)).toLowerCase()===want;
+}
+function filteredRows(view){
+  var V=VIEWS[view], d=ds(V.ds), out=[], q=F.q, i, row;
+  var pin=(F.pin && F.pin.view===view)?F.pin:null, story=(view==="timeline")?F.story:null;
+  for(i=0;i<d.rows.length;i++){ row=d.rows[i];
+    if(view==="findings" && F.sev!=="all" && cell(d,row,"Severity")!==F.sev) continue;
+    if(F.host && V.host && !hostMatch(view,d,row)) continue;
+    if(F.tech && V.tech && cell(d,row,V.tech)!==F.tech) continue;
+    if(view==="timeline"){
+      if(F.remOnly){ var tq=cell(d,row,"Technique"); if(!tq || tq==="RDP") continue; }
+      if(F.failOnly && cell(d,row,"Result")!=="Failure") continue;
+    }
+    if((F.from||F.to) && V.time){ var dn=dayNum(cell(d,row,V.time)); if(F.from && dn<F.from) continue; if(F.to && dn>F.to) continue; }
+    if(pin && !pinMatch(d,row,pin)) continue;
+    if(story){ var t=msOf(cell(d,row,"Timestamp")); if(Math.abs(t-story.t)>story.win) continue;
+      var rel=(story.user && bareUser(cell(d,row,"User"))===story.user) || (story.ip && cell(d,row,"SourceIp")===story.ip) ||
+              (story.host && hostKey(cell(d,row,"Hostname"))===story.host) || (story.sref && cell(d,row,"SessionRef")===story.sref);
+      if(!rel) continue; }
+    if(F.iocOnly && !rowIoc(d,row)) continue;
+    if(q && rowText(d,row).indexOf(q)<0) continue;
+    out.push(row);
+  }
+  sortRows(view, d, out);
+  return out;
+}
+function sortRows(view, d, rows){
+  var st=SORT[view]; if(!st){ var def=VIEWS[view].sort; st=SORT[view]= def ? {col:def[0],dir:def[1]} : {col:null,dir:1}; }
+  if(!st.col) return;
+  var ci=d.idx[st.col]; if(ci==null) return;
+  var sev=(st.col==="Severity"), tcol=/Timestamp|Start|End|FirstSeen|LastSeen/.test(st.col);
+  rows.sort(function(a,b){
+    var x=a[ci]||"", y=b[ci]||"", r;
+    if(sev){ r=(SEVRANK[x]||0)-(SEVRANK[y]||0); if(r===0){ var ti=d.idx["Timestamp"]; r=String(b[ti]||"")<String(a[ti]||"")?1:-1; return r; } }
+    else if(!tcol && isNumStr(x) && isNumStr(y)) r=parseFloat(x)-parseFloat(y);
+    else r = x<y?-1:(x>y?1:0);
+    return r*st.dir;
+  });
+}
+function colsOf(view){ var V=VIEWS[view], d=ds(V.ds); if(V.cols){ var c=[]; for(var i=0;i<V.cols.length;i++) if(V.cols[i] in d.idx) c.push(V.cols[i]); return c; } return d.head.slice(0); }
+function techChip(t,dir){ if(!t) return ""; var cls=(dir==="Outbound")?"tq out":(t==="RDP"?"tq rdp":"tq"); return '<span class="'+cls+'">'+esc(t)+(dir==="Outbound"?" &rarr;":"")+'</span>'; }
+var LOGON_TYPES = { 2:"console", 3:"network", 4:"batch", 5:"service", 7:"unlock", 8:"cleartext", 9:"new creds", 10:"RDP", 11:"cached", 12:"cached RDP", 13:"cached unlock" };
+/* Session / power meaning of a timeline row: the engine's Activity column, or - for results from
+   an engine without it - derived from the Security / LSM event id (power events need a new run). */
+function activityOf(d,row){
+  if("Activity" in d.idx) return cell(d,row,"Activity");
+  var id=cell(d,row,"EventId"), src=cell(d,row,"LogSource");
+  if(!id) return "";
+  if(/^Security$/i.test(src)) return ({4624:"Logon",4625:"Logon failed",4634:"Logoff",4647:"Logoff",4778:"Reconnect",4779:"Disconnect"})[id]||"";
+  if(/LSM|LocalSessionManager/i.test(src)) return ({21:"Logon",23:"Logoff",24:"Disconnect",25:"Reconnect",39:"Disconnect",40:"Disconnect"})[id]||"";
+  return "";
+}
+/* Square label for logon / logoff / session / power events, with the logon type where known. */
+function actChip(d,row){
+  var a=activityOf(d,row); if(!a) return "";
+  var cls=/^Logon failed/.test(a)?"fail":/^Logon/.test(a)?"on":/^Logoff/.test(a)?"off":/connect/i.test(a)?"ses":/^Unexpected/.test(a)?"crash":"pwr";
+  var lt=cell(d,row,"LogonType"), sfx="";
+  if(/^Log(on|off)/.test(a) && LOGON_TYPES[lt] && !(lt==="10" && cell(d,row,"Technique"))) sfx=" · "+LOGON_TYPES[lt]; // an RDP chip already says RDP
+  return '<span class="act '+cls+'" title="'+esc(cell(d,row,"EventType"))+'">'+esc(a+sfx)+'</span>';
+}
+function rowClass(view,d,row){
+  var c=[];
+  if(view==="findings"){ var s=cell(d,row,"Severity"); if(s==="Critical") c.push("sev-crit"); else if(s==="High") c.push("sev-high"); else if(s==="Medium") c.push("sev-med"); }
+  if(view==="sessions"){ if(cell(d,row,"Technique")!=="RDP" && cell(d,row,"Direction")!=="Outbound") c.push("rex"); }
+  if(view==="timeline"){ var t=cell(d,row,"Technique"); if(t && t!=="RDP") c.push("rex"); if(cell(d,row,"Result")==="Failure") c.push("fail"); if(cell(d,row,"Privileged")==="Yes") c.push("priv"); }
+  if(rowIoc(d,row)) c.push("ioc");
+  c.push("clk");
+  return c.join(" ");
+}
+function cellHtml(view,d,row,col){
+  var v=cell(d,row,col);
+  if(col==="Severity") return '<span class="chip sv-'+esc(v)+'">'+esc(v)+'</span>';
+  if(col==="Technique") return actChip(d,row)+techChip(v, cell(d,row,"Direction"));
+  if(/^(Timestamp|Start|End|FirstSeen|LastSeen)$/.test(col)) return esc(fmtTs(v));
+  if(col==="Commands"||col==="CommandLine"||col==="Details"||col==="Description"||col==="Detail") return '<span title="'+esc(khText(v))+'">'+khHtml(v.length>160?v.substring(0,160)+"...":v, v)+'</span>';
+  return khHtml(v);
+}
+function render(){
+  var view=VIEW, V=VIEWS[view];
+  if(view==="timeline" && !DATA.events){ var ef=eventsFile(); setStatus("Loading "+ef+" (first use)...","muted");
+    window.setTimeout(function(){ try{ ds("events"); }catch(e){ setStatus("Could not read "+ef+": "+e.message,"err"); return; }
+      setStatus("Loaded "+nf(DATA.events.rows.length)+" events from "+ef,"ok"); render(); },30); return; }
+  var d=ds(V.ds), rows=filteredRows(view), cols=colsOf(view), st=SORT[view]||{};
+  window.__rows=rows; window.__d=d;
+  var h=['<thead><tr>'];
+  for(var c=0;c<cols.length;c++){ var on=(st.col===cols[c]), cn=esc(cols[c]);
+    var tip=on?"Sorted "+(st.dir>0?"ascending":"descending")+" - click to reverse":"Sort by "+cols[c];
+    h.push('<th data-sort="'+cn+'"'+(on?' class="sorted"':'')+'>'+cn+'<button type="button" class="sbtn'+(on?' on':'')+'" data-sort="'+cn+'" title="'+esc(tip)+'">'+
+      (on?(st.dir>0?"&#9650;":"&#9660;"):"&#8597;")+'</button></th>'); }
+  h.push('</tr></thead><tbody>');
+  var lim=Math.min(rows.length, MAXROWS);
+  for(var i=0;i<lim;i++){ var r=rows[i];
+    h.push('<tr data-i="'+i+'" class="'+rowClass(view,d,r)+(r===DETROW?" sel":"")+'">');
+    for(var k=0;k<cols.length;k++) h.push('<td'+(k===0?' class="first"':'')+'>'+cellHtml(view,d,r,cols[k])+'</td>');
+    h.push('</tr>'); }
+  if(!rows.length) h.push('<tr><td class="muted" colspan="'+Math.max(1,cols.length)+'">'+(d.missing?esc(FILES[V.ds])+" not found in the results folder"+
+    (V.ds==="remotes"?" - results from an older engine; Process again to create it":""):"no rows match the current filters")+'</td></tr>');
+  h.push('</tbody>');
+  $("tbl").innerHTML=h.join("");
+  var subsetNote="";
+  if(view==="timeline" && eventsFile()==="timeline.csv" && SUMMARY && SUMMARY.eventsKept>d.rows.length)
+    subsetNote=" (triage timeline; "+nf(SUMMARY.eventsKept)+" in the full events.csv)";
+  $("count").innerHTML=esc(nf(rows.length)+" of "+nf(d.rows.length)+" row(s)"+subsetNote)+maxRowsWarn(lim, rows.length);
+  renderChips();
+  if(SELFTEST && !SELFTEST.views[view]) SELFTEST.views[view]={ rows:rows.length, total:d.rows.length, drawn:$("tbl").getElementsByTagName("tr").length-1 };
+}
+function maxRowsWarn(shown,total){ if(!(total>shown)) return "";
+  return ' <span class="maxwarn" title="'+esc("Drawing the first "+nf(shown)+" of "+nf(total)+" matching rows - the cap keeps the app responsive; nothing was discarded. Narrow the filters, or Export view -> CSV, which writes the full filtered set.")+'">&#9888; Maximum rows exceeded</span>'; }
+function renderChips(){
+  var h="";
+  if(F.pin && F.pin.view===VIEW) h+='<span class="tfilt">'+esc((F.pin.col==="__rex"?"remote-exec sessions":F.pin.col+" = "+F.pin.val))+'<span class="x" onclick="F.pin=null;render()" title="remove">&times;</span></span>';
+  if(F.story && VIEW==="timeline") h+='<span class="tfilt">'+esc(F.story.label)+'<span class="x" onclick="F.story=null;render()" title="remove">&times;</span></span>';
+  $("chips").innerHTML=h;
+}
+function setView(v){
+  if(DETROW && DETVIEW!==v) closeDetail(); // the detail card describes a row of the tab it was opened from
+  VIEW=v; var b=document.querySelectorAll ? document.querySelectorAll(".tabs .btn") : [];
+  for(var i=0;i<b.length;i++) b[i].className = "btn"+(b[i].getAttribute("data-view")===v?" on":"");
+  showEl("sevCats", v==="findings"); showEl("tlOpts", v==="timeline"); showEl("techWrap", !!VIEWS[v].tech);
+  fillHostSel(v); F.hostKeys=hostKeysFor(F.host);
+  render();
+}
+function highlightSev(){ var b=$("sevCats").getElementsByTagName("button"); for(var i=0;i<b.length;i++) b[i].className="btn"+(b[i].getAttribute("data-sev")===F.sev?" on":""); }
+
+/* ---------- detail pane ---------- */
+function renderDetail(row){
+  var V=VIEWS[VIEW], d=ds(V.ds); DETROW=row; DETVIEW=VIEW;
+  var h=['<div class="dl">'];
+  for(var c=0;c<d.head.length;c++){ var v=row[c]; if(v==null||v==="") continue;
+    var vv=esc(v); if(IOCS.length){ for(var k=0;k<IOCS.length;k++){ var re=new RegExp("("+IOCS[k].replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+")","ig"); vv=vv.replace(re,'<span class="hl-ioc">$1</span>'); } }
+    vv=khDecorate(vv, String(v).toLowerCase()); // after the IOC marks: chips carry title attributes an IOC term could match
+    h.push('<div><span class="kv">'+esc(d.head[c])+'</span> '+vv+'</div>'); }
+  h.push('</div><div class="row">');
+  var user=cell(d,row,"User"), ip=cell(d,row,"SourceIp"), host=cell(d,row,"Host")||cell(d,row,"Hostname"), sref=cell(d,row,"SessionRef");
+  if(sref && VIEW!=="sessions") h.push('<button class="btn" onclick="gotoSession(\''+jsq(sref)+'\')">Open session #'+esc(sref)+'</button>');
+  if(sref) h.push('<button class="btn" onclick="sessionEvents(\''+jsq(sref)+'\')">Events of session #'+esc(sref)+'</button>');
+  if(VIEW==="timeline") h.push('<button class="btn" onclick="storyAround(30)" title="Every event within 30 minutes that shares this user, source IP or host">Logon story &plusmn;30 min</button>'+
+                               '<button class="btn" onclick="storyAround(120)">&plusmn;2 h</button>');
+  if(VIEW==="sessions" && cell(d,row,"Start")) h.push('<button class="btn" onclick="storyAround(30)">Logon story &plusmn;30 min</button>');
+  if(user) h.push('<button class="btn" onclick="pinTo(\'timeline\',\'User\',\''+jsq(user.split(";")[0])+'\')">Timeline: user '+esc(user)+'</button>');
+  if(ip) h.push('<button class="btn" onclick="pinTo(\'timeline\',\'SourceIp\',\''+jsq(ip.split(";")[0])+'\')">Timeline: IP '+esc(ip.split(";")[0])+'</button>');
+  if(host) h.push('<button class="btn" onclick="pinTo(\'timeline\',\'Hostname\',\''+jsq(host)+'\')">Timeline: host '+esc(hostKey(host))+'</button>');
+  if(ip) h.push('<button class="btn" onclick="pinTo(\'sessions\',\'SourceIp\',\''+jsq(ip.split(";")[0])+'\')">Sessions from this IP</button>');
+  h.push('</div>');
+  $("detBody").innerHTML=h.join(""); showEl("detailCard",true);
+  if(SELFTEST) SELFTEST.detail=(SELFTEST.detail||0)+1;
+}
+function gotoSession(sref){ F.pin={view:"sessions",col:"SessionRef",val:sref}; setView("sessions");
+  var rows=window.__rows||[]; if(rows.length) renderDetail(rows[0]); }
+function sessionEvents(sref){ F.pin={view:"timeline",col:"SessionRef",val:sref}; F.story=null; setView("timeline"); }
+function storyAround(mins){
+  var d=ds(VIEWS[DETVIEW].ds), row=DETROW; if(!row) return;
+  var t=msOf(cell(d,row,"Timestamp")||cell(d,row,"Start"));
+  var user=bareUser(cell(d,row,"User")), ip=String(cell(d,row,"SourceIp")).split(";")[0], host=hostKey(cell(d,row,"Hostname")||cell(d,row,"Host"));
+  F.story={ t:t, win:mins*60000, user:user, ip:ip, host:host, sref:cell(d,row,"SessionRef")||cell(d,row,"SessionRef"),
+            label:"story +/-"+mins+"m around "+fmtTs(cell(d,row,"Timestamp")||cell(d,row,"Start"))+" (user "+(user||"-")+", IP "+(ip||"-")+", host "+(host||"-")+")" };
+  F.pin=null; setView("timeline");
+}
+function closeDetail(){ showEl("detailCard",false); DETROW=null; }
+function copyDetail(){ if(!DETROW) return; var d=ds(VIEWS[DETVIEW].ds), L=[];
+  for(var c=0;c<d.head.length;c++) if(DETROW[c]) L.push(d.head[c]+": "+DETROW[c]);
+  try{ window.clipboardData.setData("Text", L.join("\r\n")); setStatus("Detail copied to clipboard","ok"); }catch(e){ setStatus("Clipboard blocked: "+e.message,"err"); } }
+
+/* ---------- IOCs ---------- */
+function applyIocs(silent){
+  var parts=String($("iocBox").value).split(/[\r\n,;]+/), out=[], seen={};
+  for(var i=0;i<parts.length;i++){ var s=trimStr(parts[i]).toLowerCase(); if(s.length>=2 && !seen[s]){ seen[s]=1; out.push(s); } }
+  IOCS=out; IOCS.__v=uid();
+  $("iocInfo").innerHTML=out.length?esc(out.length+" term(s) active"):"";
+  updateAnnotBtns();
+  if(!silent && RESDIR) render();
+}
+function updateAnnotBtns(){
+  try{ $("iocBtn").innerHTML="IOCs"+(IOCS.length?" ("+IOCS.length+")":"")+"&hellip;";
+       $("khBtn").innerHTML="Known hosts"+(KNOWN.n?" ("+KNOWN.n+")":"")+"&hellip;"; }catch(e){}
+}
+
+/* ---------- known hosts (IP -> host name; display only, never written into the evidence CSVs) ---------- */
+var KNOWN = { map:{}, n:0, v:"0" };   // map: lower-case IP -> {ip, name, note, lname}
+var IPV4G = /\b\d{1,3}(?:\.\d{1,3}){3}\b/g;
+function isIpAddr(s){ s=trimStr(s); return /^\d{1,3}(\.\d{1,3}){3}$/.test(s) || (/^[0-9a-f:.]+$/i.test(s) && s.indexOf(":")>=0 && s.length>=3); }
+function khSet(list){
+  var m={}, n=0;
+  for(var i=0;i<list.length;i++){ var e=list[i], ip=trimStr(e.ip).toLowerCase(), nm=trimStr(e.name); if(!isIpAddr(ip)||!nm) continue;
+    if(!m.hasOwnProperty(ip)) n++; m[ip]={ ip:ip, name:nm, note:trimStr(e.note), lname:nm.toLowerCase() }; }
+  KNOWN={ map:m, n:n, v:uid() }; updateAnnotBtns();
+}
+function khSortKey(ip){ var p=ip.split("."); if(p.length!==4) return "z"+ip; var s=""; for(var i=0;i<4;i++) s+=("00"+p[i]).slice(-3); return s; }
+function khList(){ var out=[], k; for(k in KNOWN.map) if(KNOWN.map.hasOwnProperty(k)) out.push(KNOWN.map[k]);
+  out.sort(function(a,b){ return khSortKey(a.ip)<khSortKey(b.ip)?-1:1; }); return out; }
+function khChip(k){ return '<span class="kh" title="'+esc("Known host"+(k.note?": "+k.note:""))+'">'+esc(k.name)+'</span>'; }
+/* Escaped text with a name chip after each known IP - unless the text already names that host. */
+function khDecorate(html, plainLower){
+  if(!KNOWN.n) return html;
+  var out=html.replace(IPV4G, function(ip){ var k=KNOWN.map[ip]; return (!k || plainLower.indexOf(k.lname)>=0) ? ip : ip+khChip(k); });
+  var whole=trimStr(plainLower); // IPv6: whole-value match only
+  if(whole.indexOf(":")>=0 && KNOWN.map.hasOwnProperty(whole)) out+=khChip(KNOWN.map[whole]);
+  return out;
+}
+function khHtml(text, whole){ var h=esc(text); return KNOWN.n ? khDecorate(h, String(whole==null?text:whole).toLowerCase()) : h; }
+/* Plain-text form for case notes and labels: "10.10.20.33 [SQL01]". */
+function khText(s){ s=String(s==null?"":s); if(!KNOWN.n) return s; var low=s.toLowerCase();
+  return s.replace(IPV4G, function(ip){ var k=KNOWN.map[ip]; return (k && low.indexOf(k.lname)<0) ? ip+" ["+k.name+"]" : ip; }); }
+/* The known names of the IPs in a text (added to a row's search text). */
+function khNames(s){ var out="", m, re=new RegExp(IPV4G.source,"g"); while((m=re.exec(s))){ var k=KNOWN.map[m[0]]; if(k) out+="\u0001"+k.name; } return out; }
+function loadKnown(dir){
+  var p=dir+"\\knownhosts.csv", list=[];
+  try{ if(fileExists(p)){ var rows=parseCSV(readUtf8(p));
+    for(var i=0;i<rows.length;i++){ var r=rows[i]; if(i===0 && /^ip$/i.test(trimStr(r[0]))) continue;
+      list.push({ ip:unguard(r[0]||""), name:unguard(r[1]||""), note:unguard(r[2]||"") }); } } }
+  catch(e){ appendLog("knownhosts.csv unreadable: "+e.message); }
+  khSet(list); if(KNOWN.n) appendLog("Known hosts: "+KNOWN.n+" mapping(s) from "+p);
+}
+/* IP -> name pairs the logs themselves recorded, offered in the dialog (never applied on their own). */
+function khLearned(){
+  var out=[], seen={}, d, i, r;
+  function add(ip,nm,src){ ip=trimStr(ip); nm=trimStr(nm);
+    if(!isIpAddr(ip) || !nm || nm==="-" || isIpAddr(nm)) return;
+    var cur=KNOWN.map[ip.toLowerCase()]; if(cur && cur.lname===nm.toLowerCase()) return;
+    var key=ip.toLowerCase()+"|"+nm.toLowerCase(); if(seen[key]) return; seen[key]=1; out.push({ ip:ip, name:nm, note:src }); }
+  d=DATA.sessions; if(d) for(i=0;i<d.rows.length;i++){ r=d.rows[i];
+    if(cell(d,r,"Direction")==="Outbound") add(cell(d,r,"TargetHost"), cell(d,r,"TargetHostName"), "learned: target name from a 4648 credential hand-off");
+    else if(String(cell(d,r,"SourceIp")).indexOf(";")<0) add(cell(d,r,"SourceIp"), cell(d,r,"SourceHost"), "learned: workstation name the client reported at logon (client-supplied)"); }
+  d=DATA.remotes; if(d && !d.missing) for(i=0;i<d.rows.length;i++){ r=d.rows[i];
+    add(cell(d,r,"RemoteHost"), String(cell(d,r,"Name")).split(";")[0], "learned: target name from a 4648 credential hand-off"); }
+  return out;
+}
+var KH_LEARNED=[];
+function openKnown(){
+  if(!RESDIR){ setStatus("Load results first - known hosts are saved with them","err"); return; }
+  khRenderTable(khList()); KH_LEARNED=khLearned(); khRenderLearned();
+  $("khInfo").innerHTML=""; $("khPaste").value=""; showEl("khPasteWrap",false); showEl("khModal",true);
+}
+function closeKnown(){ showEl("khModal",false); }
+function khRenderTable(list){
+  var h=['<table class="khgrid"><thead><tr><th style="width:24%">IP address</th><th style="width:30%">Host name</th><th>Note</th><th style="width:28px"></th></tr></thead><tbody>'];
+  if(!list.length) list=[{ ip:"", name:"", note:"" }];
+  for(var i=0;i<list.length;i++){ var e=list[i];
+    h.push('<tr'+(e.bad?' class="khbad"':'')+'><td><input class="txt mono" value="'+esc(e.ip)+'" placeholder="10.10.20.33"></td>'+
+           '<td><input class="txt" value="'+esc(e.name)+'" placeholder="SQL01"></td><td><input class="txt" value="'+esc(e.note||"")+'" placeholder="optional"></td>'+
+           '<td><span class="lnk" title="Remove this row" onclick="khRemove('+i+')">&times;</span></td></tr>'); }
+  h.push('</tbody></table>'); $("khTable").innerHTML=h.join("");
+}
+function khReadRows(){
+  var tb=$("khTable").getElementsByTagName("tbody")[0], trs=tb?tb.getElementsByTagName("tr"):[], out=[];
+  for(var i=0;i<trs.length;i++){ var inp=trs[i].getElementsByTagName("input");
+    out.push({ ip:trimStr(inp[0].value), name:trimStr(inp[1].value), note:trimStr(inp[2].value) }); }
+  return out;
+}
+function khAddRow(){ var l=khReadRows(); l.push({ ip:"", name:"", note:"" }); khRenderTable(l); }
+function khRemove(i){ var l=khReadRows(); l.splice(i,1); khRenderTable(l); }
+/* Adds rows to the editor (an IP already listed is replaced); returns how many. */
+function khMerge(add){
+  var l=[], idx={}, cur=khReadRows(), i, k;
+  for(i=0;i<cur.length;i++) if(cur[i].ip || cur[i].name || cur[i].note){ idx[cur[i].ip.toLowerCase()]=l.length; l.push(cur[i]); }
+  for(i=0;i<add.length;i++){ k=add[i].ip.toLowerCase(); if(idx.hasOwnProperty(k)) l[idx[k]]=add[i]; else { idx[k]=l.length; l.push(add[i]); } }
+  khRenderTable(l); return add.length;
+}
+/* Lines of "IP name [note]", CSV "IP,name,note", tab-separated, or a hosts file; # comments and headers skipped. */
+function khParse(text){
+  var out=[], lines=String(text).split(/\r?\n/);
+  for(var i=0;i<lines.length;i++){ var s=trimStr(lines[i]); if(!s || s.charAt(0)==="#") continue;
+    var p=/[,\t]/.test(s) ? (s.indexOf('"')>=0 ? parseCSVLine(s) : s.split(/\s*[,\t]\s*/)) : s.split(/\s+/);
+    for(var j=0;j<p.length;j++) p[j]=trimStr(p[j]);
+    if(!isIpAddr(p[0])) continue;
+    out.push({ ip:p[0], name:p[1]||"", note:p.slice(2).join(" ") }); }
+  return out;
+}
+function khAddPasted(){ var n=khMerge(khParse($("khPaste").value)); $("khPaste").value=""; showEl("khPasteWrap",false);
+  $("khInfo").innerHTML=esc(n+" line(s) added - Save & apply to keep them"); }
+function khRenderLearned(){
+  if(!KH_LEARNED.length){ $("khLearned").innerHTML='<div class="muted" style="font-size:12px">Nothing new - the logs resolved no other IP address to a name.</div>'; return; }
+  var h=['<table class="khgrid"><tbody>'];
+  for(var i=0;i<KH_LEARNED.length;i++){ var e=KH_LEARNED[i];
+    h.push('<tr><td class="mono" style="width:24%">'+esc(e.ip)+'</td><td style="width:30%">'+esc(e.name)+'</td><td class="muted">'+esc(e.note)+'</td>'+
+           '<td style="width:40px"><span class="lnk" onclick="khAcceptLearned('+i+')">add</span></td></tr>'); }
+  h.push('</tbody></table>');
+  if(KH_LEARNED.length>1) h.push('<span class="lnk" style="font-size:12px" onclick="khAcceptLearned(-1)">add all '+KH_LEARNED.length+'</span>');
+  $("khLearned").innerHTML=h.join("");
+}
+function khAcceptLearned(i){
+  khMerge(i<0 ? KH_LEARNED.slice(0) : [KH_LEARNED[i]]);
+  if(i<0) KH_LEARNED=[]; else KH_LEARNED.splice(i,1);
+  khRenderLearned(); $("khInfo").innerHTML="Save &amp; apply to keep them";
+}
+function khSave(){
+  var l=khReadRows(), keep=[], ok=[], bad=0, i;
+  for(i=0;i<l.length;i++){ var e=l[i]; if(!e.ip && !e.name && !e.note) continue; keep.push(e);
+    if(!isIpAddr(e.ip) || !e.name){ e.bad=true; bad++; } else ok.push(e); }
+  if(bad){ khRenderTable(keep); $("khInfo").innerHTML='<span class="err">'+bad+' row(s) need a valid IP address and a host name</span>'; return; }
+  khSet(ok);
+  var p=RESDIR+"\\knownhosts.csv", list=khList(), L=["Ip,Name,Note"], saved=false;
+  for(i=0;i<list.length;i++) L.push(csvEsc(list[i].ip)+","+csvEsc(list[i].name)+","+csvEsc(list[i].note));
+  try{ if(list.length || fileExists(p)){ writeUtf8(p, L.join("\r\n")+"\r\n", true); saved=true; } }
+  catch(e){ setStatus("Known hosts applied, but "+p+" could not be written: "+e.message,"err"); }
+  closeKnown(); khApply();
+  if(saved) setStatus(KNOWN.n+" known host(s) applied and saved to "+p,"ok");
+}
+/* Re-draws everything that shows IPs. */
+function khApply(){ if(!RESDIR) return; fillHostSel(VIEW); F.hostKeys=hostKeysFor(F.host); renderOverview(); render();
+  if(DETROW && DETVIEW===VIEW) renderDetail(DETROW); }
+function loadToolkitIoc(){
+  try{ var p=htaFolder()+"\\IOC.txt"; if(!fileExists(p)) return;
+    var lines=String(readUtf8(p)).split(/\r?\n/), add=[], i;
+    for(i=0;i<lines.length;i++){ var s=trimStr(lines[i]); if(s && s.charAt(0)!=="#") add.push(s); }
+    if(!add.length) return;
+    var cur=$("iocBox").value; $("iocBox").value=(trimStr(cur)?cur.replace(/\s+$/,"")+"\r\n":"")+add.join("\r\n");
+    applyIocs(true); appendLog("Toolkit IOC list: merged "+add.length+" term(s) from "+p);
+  }catch(e){}
+}
+
+/* ---------- export / copy ---------- */
+function csvEsc(v){ v=(v==null?"":String(v)); if(/^[=+\-@\t\r]/.test(v)) v="'"+v;
+  return /[",\r\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
+function exportView(){
+  if(!RESDIR){ setStatus("Load results first","err"); return; }
+  var V=VIEWS[VIEW], d=ds(V.ds), rows=filteredRows(VIEW), L=[];
+  var hc=[]; for(var c=0;c<d.head.length;c++) hc.push(csvEsc(d.head[c])); L.push(hc.join(","));
+  for(var i=0;i<rows.length;i++){ var r=[]; for(var k=0;k<d.head.length;k++) r.push(csvEsc(rows[i][k])); L.push(r.join(",")); }
+  var host=sanitHost($("hostName").value)||"export";
+  var p=RESDIR+"\\"+host+"_LAT_"+VIEW+"_export_"+nowStamp()+".csv";
+  try{ writeUtf8(p, L.join("\r\n")+"\r\n", true); setStatus("Exported "+nf(rows.length)+" row(s) to "+p,"ok"); if(SELFTEST) SELFTEST.exported=p; }
+  catch(e){ setStatus("Export failed: "+e.message,"err"); }
+}
+function copyNotes(){
+  if(!RESDIR) return; var V=VIEWS[VIEW], d=ds(V.ds), rows=filteredRows(VIEW), L=[], n=Math.min(rows.length,500), i, r;
+  for(i=0;i<n;i++){ r=rows[i];
+    if(VIEW==="findings") L.push(fmtTs(cell(d,r,"Timestamp"))+" ["+cell(d,r,"Severity")+"] "+cell(d,r,"Rule")+" - "+cell(d,r,"Description")+(cell(d,r,"Mitre")?" ("+cell(d,r,"Mitre")+")":""));
+    else if(VIEW==="sessions") L.push(fmtTs(cell(d,r,"Start"))+" -> "+fmtTs(cell(d,r,"End"))+"  "+cell(d,r,"Technique")+(cell(d,r,"Variant")?" ("+cell(d,r,"Variant")+")":"")+" "+cell(d,r,"Direction")+
+      "  host "+cell(d,r,"Host")+(cell(d,r,"TargetHost")?" -> "+cell(d,r,"TargetHost")+(cell(d,r,"TargetHostName")?" ("+cell(d,r,"TargetHostName")+")":""):"")+"  user "+(cell(d,r,"User")||"-")+(cell(d,r,"CredentialsUsed")?" using "+cell(d,r,"CredentialsUsed"):"")+"  from "+(cell(d,r,"SourceIp")||cell(d,r,"SourceHost")||"-")+
+      (cell(d,r,"Commands")?"  cmds: "+cell(d,r,"Commands"):""));
+    else if(VIEW==="timeline") L.push(fmtTs(cell(d,r,"Timestamp"))+"  "+cell(d,r,"Hostname")+"  "+cell(d,r,"EventId")+" "+cell(d,r,"EventType")+"  user "+(cell(d,r,"User")||"-")+
+      (cell(d,r,"SourceIp")?"  from "+cell(d,r,"SourceIp"):"")+(cell(d,r,"LogonType")?"  type "+cell(d,r,"LogonType"):"")+(cell(d,r,"Details")?"  "+cell(d,r,"Details"):""));
+    else { var parts=[]; for(var c=0;c<d.head.length && c<8;c++) parts.push(d.head[c]+"="+r[c]); L.push(parts.join("  ")); }
+  }
+  for(i=0;i<L.length;i++) L[i]=khText(L[i]); // "10.10.20.33 [SQL01]" from Known hosts
+  if(rows.length>500) L.push("... first 500 of "+nf(rows.length)+" rows (Export view -> CSV writes the full set)");
+  try{ window.clipboardData.setData("Text", L.join("\r\n")); setStatus("Copied "+n+" line(s) for case notes","ok"); }catch(e){ setStatus("Clipboard blocked: "+e.message,"err"); }
+}
+
+/* ---------- misc actions ---------- */
+function openDir(){ var dd=trimStr($("outDir").value); if(!dd){ setStatus("No output directory set","err"); return; }
+  try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+dd+'"',1,false); }catch(e){ setStatus("Could not open folder: "+e.message,"err"); } }
+function openHtml(){ var sh=new ActiveXObject("WScript.Shell");
+  try{ sh.Run('"'+RESDIR+'\\report-findings.html"',1,false); }catch(e){ setStatus("Could not open the report: "+e.message,"err"); }
+  try{ if(fileExists(RESDIR+"\\report-sessions.html")) sh.Run('"'+RESDIR+'\\report-sessions.html"',1,false); }catch(e2){} }
+function resolveTle(){
+  var c=["C:\\Program Files\\TimelineExplorer\\TimelineExplorer.exe","C:\\Tools\\TimelineExplorer\\TimelineExplorer.exe",
+         "C:\\ZimmermanTools\\TimelineExplorer\\TimelineExplorer.exe","C:\\Tools\\ZimmermanTools\\TimelineExplorer\\TimelineExplorer.exe"];
+  for(var i=0;i<c.length;i++) if(fileExists(c[i])) return c[i];
+  var roots=["C:\\ZimmermanTools","C:\\Tools\\ZimmermanTools","C:\\Tools"];
+  try{ var fso=new ActiveXObject("Scripting.FileSystemObject");
+    for(var r=0;r<roots.length;r++){ if(!fso.FolderExists(roots[r])) continue; var sub=new Enumerator(fso.GetFolder(roots[r]).SubFolders);
+      for(; !sub.atEnd(); sub.moveNext()){ var cand=sub.item().Path+"\\TimelineExplorer\\TimelineExplorer.exe"; if(fileExists(cand)) return cand; } } }catch(e){}
+  try{ var sh=new ActiveXObject("WScript.Shell"); var dl=sh.SpecialFolders("Desktop")+"\\Timeline Explorer.lnk"; if(!fileExists(dl)) dl=sh.SpecialFolders("Desktop")+"\\TimelineExplorer.lnk";
+    if(fileExists(dl)){ var lk=sh.CreateShortcut(dl); if(lk.TargetPath && fileExists(lk.TargetPath+"")) return lk.TargetPath+""; } }catch(e2){}
+  return "";
+}
+function openInTle(){ var csv=RESDIR+"\\events.csv"; if(!fileExists(csv)){ setStatus("No events.csv loaded","err"); return; }
+  var tle=resolveTle(); if(!tle){ setStatus("Timeline Explorer not found - open "+csv+" manually.","err"); return; }
+  try{ new ActiveXObject("WScript.Shell").Run('"'+tle+'" "'+csv+'"',1,false); setStatus("Opening events.csv in Timeline Explorer...","ok"); }catch(e){ setStatus("Could not launch Timeline Explorer: "+e.message,"err"); } }
+
+/* ---------- command line (Artifact-Finder hand-off) ---------- */
+function getCommandLine(){
+  try{ var cl=latHta.commandLine+""; if(cl && cl!=="undefined") return cl; }catch(e){}
+  try{ var lp=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"), fn=lp.substring(lp.lastIndexOf("\\")+1).toLowerCase();
+    var svc=new ActiveXObject("WbemScripting.SWbemLocator").ConnectServer(".","root\\cimv2");
+    var en=new Enumerator(svc.ExecQuery("SELECT CommandLine,CreationDate FROM Win32_Process WHERE Name='mshta.exe'")), best="", bd="";
+    for(; !en.atEnd(); en.moveNext()){ var pr=en.item(), pcl=(pr.CommandLine==null?"":pr.CommandLine+""); if(pcl.toLowerCase().indexOf(fn)<0) continue;
+      var cd=(pr.CreationDate==null?"":pr.CreationDate+""); if(!best || cd>bd){ best=pcl; bd=cd; } }
+    return best; }catch(e2){}
+  return "";
+}
+function tokenizeCmdTail(){
+  var cl=getCommandLine(); if(!cl) return [];
+  var m=cl.match(/\.hta"?/i), tail=m?cl.substring(m.index+m[0].length):cl, toks=[], i=0, cur="", inq=false;
+  while(i<tail.length){ var c=tail.charAt(i);
+    if(inq){ if(c==='"') inq=false; else cur+=c; i++; continue; }
+    if(c==='"'){ inq=true; i++; continue; }
+    if(c===' '||c==='\t'){ if(cur!==""){ toks.push(cur); cur=""; } i++; continue; }
+    cur+=c; i++; }
+  if(cur!=="") toks.push(cur); return toks;
+}
+var CASE_FROM="", CASE_TO="";
+/* One date window: the engine window (control panel) and the view filter (results bar) always hold
+   the same dates. The view filter applies at once; the engine window applies on the next Process. */
+function normDate(s){ var m=trimStr(s).match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); return m ? m[1]+"-"+("0"+m[2]).slice(-2)+"-"+("0"+m[3]).slice(-2) : ""; }
+function syncDate(which, v, quiet){
+  var n=normDate(v);
+  if(trimStr(v) && !n){ setStatus("Dates are YYYY-MM-DD (UTC)","err"); return false; }
+  if(which==="from"){ $("optFrom").value=n; $("dfrom").value=n; F.from=dayNum(n); }
+  else { $("optTo").value=n; $("dto").value=n; F.to=dayNum(n); }
+  if(!quiet && RESDIR){ render(); windowNote(); }
+  return true;
+}
+/* Results imported with an engine window hold no events outside it: say so when the dates widen. */
+function windowNote(){
+  var S=SUMMARY||{}, lf=S.from?dayNum(S.from):0, lt=S.to?dayNum(S.to):0;
+  var a=S.from?String(S.from).substring(0,10):"", b=S.to?String(S.to).substring(0,10):"";
+  if((lf && (!F.from || F.from<lf)) || (lt && (!F.to || F.to>lt)))
+    setStatus("The loaded results only hold events "+(a&&b ? a+" .. "+b : a ? "from "+a : "up to "+b)+
+      " (the engine window of that run) - Process again to analyse the wider window.","muted");
+}
+function parseCli(){
+  var t=tokenizeCmdTail(), cli={input:"", outDir:"", auto:false, from:"", to:"", tz:"", selftest:false};
+  for(var i=0;i<t.length;i++){ var a=t[i], m;
+    if(/^[\/\-]{1,2}auto$/i.test(a)){ cli.auto=true; continue; }
+    if(/^[\/\-]{1,2}selftest$/i.test(a)){ cli.selftest=true; continue; }
+    if((m=a.match(/^[\/\-]{1,2}from[:=](\d{4}-\d{2}-\d{2})$/i))){ cli.from=m[1]; continue; }
+    if((m=a.match(/^[\/\-]{1,2}to[:=](\d{4}-\d{2}-\d{2})$/i))){ cli.to=m[1]; continue; }
+    if((m=a.match(/^[\/\-]{1,2}tz[:=](.+)$/i))){ cli.tz=m[1]; continue; }
+    if(/^[\/\-]/.test(a) && !/^[\/\\]{2}/.test(a)) continue;
+    if(!cli.input) cli.input=a; else if(!cli.outDir) cli.outDir=a; }
+  return cli;
+}
+function applyCli(cli){
+  if(cli.from){ CASE_FROM=cli.from; syncDate("from", cli.from, true); }
+  if(cli.to){ CASE_TO=cli.to; syncDate("to", cli.to, true); }
+  if(CASE_FROM||CASE_TO) appendLog("CLI: case window "+(CASE_FROM||"...")+" .. "+(CASE_TO||"...")+" - set as the date window (engine import window and view filter)");
+  if(cli.tz){ addTzOption(cli.tz); $("optTz").value=cli.tz; }
+  if(!cli.input) return false;
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(cli.outDir){ $("outDir").value=cli.outDir; OUT_TOUCHED=true; hostGuessFrom(cli.outDir); }
+  var res=resultsFolderOf(cli.input);
+  if(res){ appendLog("CLI: loading results "+res); window.setTimeout(function(){ loadResults(res); if(cli.selftest) runSelfTest(); },60); return true; }
+  if(/^live$/i.test(cli.input)){ $("inMode").value="live"; $("inPath").value=""; hostGuessFrom("live"); }
+  else if(fso.FolderExists(cli.input)){ $("inMode").value="d"; $("inPath").value=cli.input; }
+  else if(fso.FileExists(cli.input)){ $("inMode").value="f"; $("inPath").value=cli.input; }
+  else { setStatus("CLI input not found: "+cli.input,"err"); return false; }
+  if(!cli.outDir) hostGuessFrom(cli.input);
+  if(cli.auto){ appendLog("CLI: /auto - processing "+cli.input); window.setTimeout(processRun,300); }
+  else setStatus("CLI: input prefilled. Click 'Process -> analyze' to run.","muted");
+  return true;
+}
+
+/* ---------- self test (hidden: /selftest <resultsDir>) - renders every view in the real mshta engine ---------- */
+function runSelfTest(){ trace("selftest start");
+  SELFTEST={ started:new Date().getTime(), views:{}, errors:JSERRORS };
+  var order=["findings","sessions","timeline","users","ips","hosts","remotes","files"], k=0;
+  function step(){
+    try{ trace("selftest step "+k);
+      if(k<order.length){ setView(order[k]); var rows=window.__rows||[]; if(rows.length) renderDetail(rows[0]);
+        if(order[k]==="timeline" && !DATA.events){ window.setTimeout(step,300); return; }
+        k++; window.setTimeout(step,50); return; }
+      // drill-downs
+      F.pin={view:"sessions",col:"__rex",val:"1"}; setView("sessions"); SELFTEST.rexSessions=(window.__rows||[]).length;
+      if(!SELFTEST.rexSessions){ F.pin=null; setView("sessions"); }
+      if((window.__rows||[]).length){ var srow=window.__rows[0]; renderDetail(srow); var sref=cell(DATA.sessions,srow,"SessionRef");
+        SELFTEST.drillSession=sref; sessionEvents(sref); SELFTEST.sessionEvents=(window.__rows||[]).length;
+        if((window.__rows||[]).length){ renderDetail(window.__rows[0]); storyAround(30); SELFTEST.story=(window.__rows||[]).length; } }
+      var ud=DATA.users; if(ud.rows.length){ var u1=cell(ud,ud.rows[0],"User"); pinTo("timeline","User",u1); SELFTEST.userPivot={user:u1, rows:(window.__rows||[]).length}; }
+      $("iocBox").value="psexesvc\r\nadministrator"; applyIocs(); F.iocOnly=true; F.pin=null; F.story=null; setView("timeline"); SELFTEST.iocTimeline=(window.__rows||[]).length; F.iocOnly=false;
+      // Known hosts: a name for the most common source / target IP makes it searchable and labelled.
+      var khPrev=khList(), khIp=(String(cell(DATA.sessions,DATA.sessions.rows[0]||[],"TargetHost")||cell(DATA.sessions,DATA.sessions.rows[0]||[],"SourceIp")).split(";")[0]);
+      if(isIpAddr(khIp)){ khSet([{ ip:khIp, name:"KHSELFTEST" }]); F.q="khselftest"; F.pin=null; setView("sessions");
+        var spans=$("tbl").getElementsByTagName("span"), chips=0; for(var si=0;si<spans.length;si++) if(spans[si].className==="kh") chips++;
+        SELFTEST.knownHosts={ ip:khIp, searchRows:(window.__rows||[]).length, chips:chips }; F.q=""; khSet(khPrev); }
+      // Activity labels (logon / logoff / power) on the timeline.
+      setView("timeline"); var acts={}, asp=$("tbl").getElementsByTagName("span");
+      for(var ai=0;ai<asp.length;ai++){ var am=/^act (\w+)$/.exec(asp[ai].className); if(am) acts[am[1]]=(acts[am[1]]||0)+1; }
+      SELFTEST.activityChips=acts;
+      F.remOnly=true; setView("timeline"); SELFTEST.remoteOnly=(window.__rows||[]).length; F.remOnly=false;
+      F.failOnly=true; setView("timeline"); SELFTEST.failuresOnly=(window.__rows||[]).length; F.failOnly=false;
+      setView("findings"); exportView(); copyNotes();
+      SELFTEST.summary=buildRunSummary(); SELFTEST.ms=new Date().getTime()-SELFTEST.started; SELFTEST.status=$("status").innerText;
+    }catch(e){ JSERRORS.push("selftest: "+(e.message||e)); }
+    try{ writeUtf8(RESDIR+"\\hta-selftest.json", JSON.stringify(SELFTEST,null,2)); }catch(e2){}
+    window.setTimeout(function(){ window.close(); }, 200);
+  }
+  window.setTimeout(step,100);
+}
+
+/* ---------- wiring ---------- */
+function addTzOption(v){ var sel=$("optTz"); for(var i=0;i<sel.options.length;i++) if(sel.options[i].value===v) return;
+  var o=document.createElement("option"); o.value=v; o.text=v; sel.add(o); }
+function init(){
+  try{ window.resizeTo(1400,940); }catch(e){}
+  $("apppill").innerHTML="app v"+APP_VERSION; try{ document.title="Login Activity Triage v"+APP_VERSION; }catch(e){}
+  $("maxrowLbl").innerHTML=nf(MAXROWS);
+  for(var t=0;t<TZS.length;t++) addTzOption(TZS[t]);
+  $("optTz").value="auto";
+
+  var zoom=0.9, zc=$("content");
+  function applyZoom(){ zc.style.zoom=zoom; zc.style.width=(100/zoom)+"%";
+    // The popups (IOCs, Known hosts, Help) sit outside #content: give their cards the same text size.
+    var cards=document.querySelectorAll(".modal .mcard"); for(var ci=0;ci<cards.length;ci++) cards[ci].style.zoom=zoom; }
+  applyZoom();
+  $("fup").onclick=function(){ zoom=Math.min(zoom+0.15,2.5); applyZoom(); };
+  $("fdown").onclick=function(){ zoom=Math.max(zoom-0.15,0.6); applyZoom(); };
+
+  $("inPath").value="";
+  $("inMode").onchange=function(){ var live=this.value==="live"; $("inPath").disabled=live; if(live) hostGuessFrom("live"); updateLiveWarn(); };
+  $("hostName").onkeyup=$("hostName").onchange=function(){ HOST_TOUCHED=true; syncOutDir(); };
+  $("outDir").onkeyup=$("outDir").onchange=function(){ OUT_TOUCHED=true; };
+  $("inPath").onchange=function(){ hostGuessFrom(this.value); };
+  $("browseBtn").onclick=function(){
+    if($("inMode").value==="f"){ $("inPick").click(); return; }
+    try{ var fld=new ActiveXObject("Shell.Application").BrowseForFolder(0,"Select the event-log folder (collection trees are fine - the scan recurses).",0x51);
+      if(fld){ var p=""; try{ p=fld.Self.Path+""; }catch(e2){} if(/^[a-z]:\\|^\\\\/i.test(p)){ $("inMode").value="d"; $("inPath").value=p; hostGuessFrom(p); } } }
+    catch(e){ $("inPick").click(); } };
+  $("inPick").onchange=function(){ if(this.value){ var v=this.value; if($("inMode").value==="d") v=parentDir(v); $("inPath").value=v; hostGuessFrom(v); } };
+  $("liveBtn").onclick=function(){ $("inMode").value="live"; $("inPath").value=""; $("inPath").disabled=true; HOST_TOUCHED=false; hostGuessFrom("live"); updateLiveWarn(); };
+  $("elevBtn").onclick=relaunchElevated;
+  $("openDirBtn").onclick=openDir;
+  $("procBtn").onclick=processRun;
+  $("verBtn").onclick=function(){ if(checkEngine()) setStatus("Engine v"+ENGINE_VER+" at "+EXE,"ok"); };
+  $("getBtn").onclick=downloadEngine;
+  $("htmlBtn").onclick=openHtml;
+  $("tleBtn").onclick=openInTle;
+  $("loadBtn").onclick=function(){ $("resPick").click(); };
+  $("resPick").onchange=function(){ if(!this.value) return; var r=resultsFolderOf(this.value);
+    if(r) loadResults(r); else setStatus("That folder has no summary.json - pick a file inside an engine results folder.","err"); };
+  $("logToggle").onclick=function(){ var l=$("log");
+    if(l.style.display==="none"||!l.style.display){ if(!trimStr(l.innerHTML)){ l.innerHTML='<span class="muted">(empty - engine output appears here after a run)</span>'; l.setAttribute("data-ph","1"); } l.style.display="block"; this.innerHTML="Hide log"; }
+    else { l.style.display="none"; this.innerHTML="Show log"; } };
+
+  var tabs=document.querySelectorAll(".tabs .btn");
+  for(var i=0;i<tabs.length;i++) tabs[i].onclick=function(){ setView(this.getAttribute("data-view")); };
+  var sb=$("sevCats").getElementsByTagName("button");
+  for(var j=0;j<sb.length;j++) sb[j].onclick=function(){ F.sev=this.getAttribute("data-sev"); highlightSev(); render(); };
+  $("q").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer); qTimer=window.setTimeout(function(){ F.q=trimStr($("q").value).toLowerCase(); render(); },200); };
+  $("hostSel").onchange=function(){ F.host=this.value; F.hostKeys=hostKeysFor(F.host); render(); };
+  $("techSel").onchange=function(){ F.tech=this.value; render(); };
+  $("remOnly").onclick=function(){ F.remOnly=this.checked; render(); };
+  $("failOnly").onclick=function(){ F.failOnly=this.checked; render(); };
+  $("fullEv").onclick=function(){
+    if(this.checked){ var sz=fileSizeOf(RESDIR+"\\events.csv");
+      if(sz>60*1024*1024 && !confirm("events.csv is "+Math.round(sz/1048576)+" MB. Loading it here can take minutes and a lot of memory.\n\nOpen in Timeline Explorer is better for the full set. Load it anyway?")){ this.checked=false; return; } }
+    FULLEVENTS=this.checked; delete DATA.events; render(); };
+  $("dfrom").onchange=$("optFrom").onchange=function(){ syncDate("from", this.value); };
+  $("dto").onchange=$("optTo").onchange=function(){ syncDate("to", this.value); };
+  $("iocOnly").onclick=function(){ F.iocOnly=this.checked; render(); };
+  $("iocBtn").onclick=function(){ showEl("iocModal",true); try{ $("iocBox").focus(); }catch(ef){} };
+  $("iocApply").onclick=function(){ applyIocs(); showEl("iocModal",false); };
+  $("iocLoad").onclick=function(){ $("iocPick").click(); };
+  $("iocPick").onchange=function(){ if(this.value){ try{ $("iocBox").value=readUtf8(this.value); applyIocs(); }catch(e){ setStatus("Could not read IOC file: "+e.message,"err"); } } };
+  $("khBtn").onclick=openKnown;
+  $("khPick").onchange=function(){ if(!this.value) return;
+    try{ var n=khMerge(khParse(readUtf8(this.value))); $("khInfo").innerHTML=esc(n+" mapping(s) read from the file - Save & apply to keep them"); }
+    catch(e){ $("khInfo").innerHTML='<span class="err">'+esc("Could not read the file: "+e.message)+'</span>'; } };
+  $("clearBtn").onclick=function(){ $("q").value=""; syncDate("from","",true); syncDate("to","",true); $("hostSel").value=""; $("techSel").value="";
+    $("remOnly").checked=false; $("failOnly").checked=false; $("iocOnly").checked=false;
+    F={ q:"", host:"", tech:"", sev:"all", from:0, to:0, iocOnly:false, remOnly:false, failOnly:false, pin:null, story:null }; highlightSev(); render(); };
+  $("exportBtn").onclick=exportView;
+  $("copyBtn").onclick=copyNotes;
+  $("detClose").onclick=closeDetail;
+  $("detCopy").onclick=copyDetail;
+
+  document.onclick=function(e){ e=e||window.event; var t=e.target||e.srcElement; if(!t) return;
+    var s=t.getAttribute?t.getAttribute("data-sort"):null;
+    if(s){ var st=SORT[VIEW]||{}; SORT[VIEW]={col:s, dir:(st.col===s?-st.dir:(/Score|Count|Failed|RemoteExec|RemoteAccessTool|Creds|Connections|Severity/.test(s)?-1:1))}; render(); return; }
+    var n=t; while(n && n.tagName!=="TR"){ n=n.parentNode; if(n && n.tagName==="TABLE"){ n=null; break; } }
+    if(!n || !n.getAttribute) return; var di=n.getAttribute("data-i"); if(di==null||di==="") return;
+    var rows=window.__rows||[], ix=parseInt(di,10); if(ix<0||ix>=rows.length) return;
+    renderDetail(rows[ix]);
+    var trs=$("tbl").getElementsByTagName("tr"); for(var z=0;z<trs.length;z++){ trs[z].className=trs[z].className.replace(/\s*\bsel\b/g,""); }
+    n.className+=" sel"; };
+
+  loadToolkitIoc();
+  trace("init: wiring done"); checkElevation(); updateLiveWarn(); trace("elevated="+ELEVATED);
+  checkEngine(); trace("engine="+EXE+" v"+ENGINE_VER);
+  var cli=parseCli(), had=false; trace("cli input="+cli.input+" selftest="+cli.selftest);
+  try{ had=applyCli(cli); }catch(e){ appendLog("CLI parse error: "+e.message); }
+  if(!had){ $("inMode").value="d"; setStatus("Pick an event-log folder (or 'This machine'), set the target hostname, then Process. Or Load results...","muted"); }
+}
+function updateLiveWarn(){
+  var live=$("inMode").value==="live";
+  showEl("elevBtn", live && !ELEVATED);
+  if(live && !ELEVATED){ $("liveWarn").innerHTML="This app is <b>not elevated</b>: the live <b>Security</b> log cannot be read, so logons, PsExec service installs (4697), admin-share access and process creation will be missing. Use <b>Relaunch elevated</b> for a complete live triage."; showEl("liveWarn",true); }
+  else showEl("liveWarn",false);
+}
+
+/* ---------- help / self-update ---------- */
+function openUrl(u){ try{ new ActiveXObject("WScript.Shell").Run('"'+u+'"',1,false); }catch(e){ setStatus("Could not open browser: "+e.message,"err"); } }
+/* The manual ships next to the app as docs\manual.html (release bundle); otherwise the repository. */
+function openManual(){ var p=(htaFolder()||"")+"\\docs\\manual.html"; openUrl(fileExists(p) ? p : GITHUB+"/blob/main/docs/manual.html"); }
+function openHelp(){ try{ $("helpVer").innerHTML="v"+APP_VERSION+(ENGINE_VER?" &middot; engine v"+ENGINE_VER:""); }catch(e){} showEl("helpModal",true); }
+function closeHelp(){ showEl("helpModal",false); }
+var SELF_LATEST="", SELF_ASSET_URL="";
+function selfVerNewer(r,l){ var a=String(r).split("."),b=String(l).split("."),n=Math.max(a.length,b.length);
+  for(var i=0;i<n;i++){ var x=parseInt(a[i],10)||0,y=parseInt(b[i],10)||0; if(x!==y) return x>y; } return false; }
+function selfPath(){ try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); if(/\.hta$/i.test(p) && fileExists(p)) return p; }catch(e){}
+  return (htaFolder()||"")+"\\"+SELF_HTA; }
+function checkSelfUpdate(){
+  try{ var x=new ActiveXObject("MSXML2.XMLHTTP.6.0");
+    x.open("GET","https://api.github.com/repos/"+SELF_REPO+"/releases/latest",true);
+    try{ x.setRequestHeader("User-Agent",SELF_HTA); }catch(eh){}
+    x.onreadystatechange=function(){ if(x.readyState!==4) return;
+      try{ var ap=$("apppill"); if(x.status!==200){ ap.title="No GitHub release found (or offline) - running v"+APP_VERSION; return; }
+        var t=x.responseText+"", m=t.match(/"tag_name"\s*:\s*"v?([0-9.]+)"/i); if(!m) return;
+        var latest=m[1]; if(!selfVerNewer(latest,APP_VERSION)){ ap.className="pill ok"; ap.title="Up to date - v"+APP_VERSION+" is the latest release."; return; }
+        var url="", re=/"browser_download_url"\s*:\s*"([^"]+\.hta)"/ig, mm; while((mm=re.exec(t))){ url=mm[1]; if(mm[1].toLowerCase().indexOf(SELF_HTA.toLowerCase())>=0) break; }
+        if(!url) return; SELF_LATEST=latest; SELF_ASSET_URL=url;
+        ap.className="pill bad"; ap.innerHTML="app v"+APP_VERSION+" &middot; update v"+latest;
+        var b=$("selfUpd"); b.innerHTML="Update to v"+latest; b.className="btn primary";
+      }catch(e){} };
+    x.send(); }catch(e){}
+}
+function doSelfUpdate(){
+  if(!SELF_ASSET_URL){ setStatus("No update available (or offline).","muted"); return; }
+  var target=selfPath(); if(!/\.hta$/i.test(target)){ setStatus("Can't locate this app's own file to update in place.","err"); return; }
+  if(!confirm("Download "+SELF_HTA+" v"+SELF_LATEST+" and replace this file?\n\n"+target+"\n\nThe engine exe is updated separately (Download engine).")) return;
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), ps1=fso.GetSpecialFolder(2)+"\\latupd_"+uid()+".ps1";
+  var tq=String(target).replace(/'/g,"''"), uq=String(SELF_ASSET_URL).replace(/'/g,"''");
+  var L=["$ErrorActionPreference='Stop'","[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
+    "$tmp=Join-Path $env:TEMP ('latupd_'+[guid]::NewGuid().ToString('N')+'.hta')",
+    "Invoke-WebRequest -UseBasicParsing -Uri '"+uq+"' -OutFile $tmp -Headers @{ 'User-Agent'='"+SELF_HTA+"' }",
+    "if((Get-Item $tmp).Length -lt 2000){ throw 'downloaded file too small' }","Copy-Item $tmp '"+tq+"' -Force","Remove-Item $tmp -Force","Write-Output 'SELFUPD_OK'"];
+  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(ew){ setStatus("Self-update stage failed: "+ew.message,"err"); return; }
+  var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1'], false); try{ fso.DeleteFile(ps1); }catch(e0){}
+  if(/SELFUPD_OK/.test(r.log)){ setStatus("Updated to v"+SELF_LATEST+" - close and reopen the app.","ok"); showEl("selfUpd",false); }
+  else { appendLog("--- self-update ---\n"+r.log); setStatus("Self-update failed - see log.","err"); }
+}
+
+/* Trace file for unattended runs (/selftest): %TEMP%\lat-hta-trace.log */
+var TRACE=false;
+try{ TRACE=/selftest/i.test(latHta.commandLine+""); }catch(et){}
+function trace(m){ if(!TRACE) return;
+  try{ var fso=new ActiveXObject("Scripting.FileSystemObject"), f=fso.OpenTextFile(fso.GetSpecialFolder(2)+"\\lat-hta-trace.log",8,true);
+    f.WriteLine(new Date().toISOString()+"  "+m); f.Close(); }catch(e){} }
+
+/* Log script errors instead of letting mshta raise a blocking dialog. */
+window.onerror=function(msg,url,line){ JSERRORS.push(msg+" (line "+line+")"); trace("ERROR "+msg+" line "+line);
+  try{ appendLog("Script error: "+msg+" (line "+line+")"); showLog(); }catch(e){} return true; };
+window.onload=function(){ trace("onload"); try{ init(); }catch(e){ trace("init threw "+(e.message||e)); JSERRORS.push("init: "+(e.message||e)); }
+  trace("init done"); if(!TRACE) try{ window.setTimeout(checkSelfUpdate,800); }catch(e2){} };
+</script>
+<div id="iocModal" class="modal hide" onclick="if((event.srcElement||{}).id==='iocModal')showEl('iocModal',false)">
+  <div class="mcard">
+    <span class="x" onclick="showEl('iocModal',false)" title="Close">&times;</span>
+    <h2>IOCs</h2>
+    <p class="muted">Host names, IPs, user names, service names, file names &mdash; one per line, or comma separated. Matched case-insensitively against every column (and Known hosts names); matching rows get a red left border, and <b>IOC hits only</b> filters to them. The toolkit <code>IOC.txt</code> next to this app is merged in at launch.</p>
+    <textarea id="iocBox" rows="10" style="width:100%;box-sizing:border-box"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="btn primary" id="iocApply">Apply</button>
+      <button class="btn" id="iocLoad">Load file&hellip;</button>
+      <input type="file" id="iocPick" style="display:none">
+      <button class="btn" onclick="showEl('iocModal',false)">Close</button>
+      <span class="muted" id="iocInfo" style="font-size:12px;margin-left:8px"></span>
+    </div>
+  </div>
+</div>
+<div id="khModal" class="modal hide" onclick="if((event.srcElement||{}).id==='khModal')closeKnown()">
+  <div class="mcard" style="max-width:900px">
+    <span class="x" onclick="closeKnown()" title="Close">&times;</span>
+    <h2>Known hosts</h2>
+    <p class="muted">Label IP addresses with a host name everywhere they appear: tables, the detail card, the host filter, the overview, search and case notes. <b>Display only</b> &mdash; the engine CSVs and <i>Export view &rarr; CSV</i> keep the logged values. Saved with these results as <code>knownhosts.csv</code> (per case: the same private IP is a different machine at another site).</p>
+    <div id="khTable"></div>
+    <div class="row" style="margin-top:6px">
+      <button class="btn" onclick="khAddRow()">+ Add row</button>
+      <button class="btn" onclick="showEl('khPasteWrap',/\bhide\b/.test($('khPasteWrap').className))" title="Paste lines: IP name [note], CSV (IP,name,note) or hosts-file format">Paste list&hellip;</button>
+      <button class="btn" onclick="$('khPick').click()">Load file&hellip;</button>
+      <input type="file" id="khPick" style="display:none">
+    </div>
+    <div id="khPasteWrap" class="hide" style="margin-top:6px">
+      <textarea id="khPaste" rows="5" style="width:100%;box-sizing:border-box" placeholder="10.10.20.33  SQL01  SQL server&#13;&#10;10.10.20.9, DC01, domain controller"></textarea>
+      <button class="btn" onclick="khAddPasted()">Add these lines</button>
+    </div>
+    <h3>Learned from these logs</h3>
+    <div id="khLearned"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn primary" onclick="khSave()">Save &amp; apply</button>
+      <button class="btn" onclick="closeKnown()">Cancel</button>
+      <span class="muted" id="khInfo" style="font-size:12px;margin-left:8px"></span>
+    </div>
+  </div>
+</div>
+<div id="helpModal" class="modal hide" onclick="if((event.srcElement||{}).id==='helpModal')closeHelp()">
+  <div class="mcard">
+    <span class="x" onclick="closeHelp()" title="Close">&times;</span>
+    <h2>Login Activity Triage <span class="muted" style="font-size:13px;font-weight:400" id="helpVer"></span></h2>
+    <div class="muted" style="font-family:Consolas,monospace;font-size:12px">GitHub: <span class="lnk" onclick="openUrl(GITHUB)">https://github.com/bpmorris22/LoginActivityTriage</span></div>
+    <p><span class="lnk" onclick="openManual()"><b>Open the full manual</b></span> <span class="muted">(screens, every detection rule, the engine's command line and outputs)</span></p>
+    <p>Answers <i>who logged on, from where, to which host, how, and what ran remotely</i> from offline EVTX (or this machine's live logs). For forensic / defensive use. The engine (<code>LoginActivityTriageCli.exe</code>) is read-only against the evidence; this app drives it and explores its CSVs.</p>
+    <h3>Quick start</h3>
+    <ul>
+      <li>Keep <code>LoginActivityTriageCli.exe</code> next to this <code>.hta</code> (or in <code>.\bin</code>). It needs the .NET 8+ runtime.</li>
+      <li>Pick a folder of <code>.evtx</code> (KAPE / Velociraptor collections recurse fine; several hosts at once is fine), a single <code>.evtx</code>, or <b>This machine</b> (relaunch elevated for Security). Set the target hostname (or a case label for multi-host input) and the evidence site's <b>after-hours zone</b>, then <b>Process &rarr; analyze</b>.</li>
+      <li>Or <b>Load results&hellip;</b> to reopen an earlier output folder.</li>
+    </ul>
+    <h3>What it detects</h3>
+    <ul>
+      <li><b>Remote sessions</b> stitched per host from Security, System, TerminalServices, RdpCoreTS, RDPClient, WinRM, PowerShell and Sysmon logs: <b>RDP</b> (NLA auth, logon, reconnect, disconnect, logoff), <b>PsExec</b> and clones (PAExec, RemCom, Impacket psexec / smbexec, admin-share service binaries), <b>PowerShell Remoting / WinRS</b>, <b>WMI</b> (incl. Impacket wmiexec), <b>DCOM</b>, <b>remote scheduled tasks</b> (incl. atexec), <b>executables dropped on admin shares</b>, and <b>outbound</b> use from the host (psexec.exe, mstsc, WinRM client, remote WMI). Sessions carry user, source IP / workstation, logon id, commands and a confidence.</li>
+      <li><b>Findings</b>: the above plus failed-then-success, password spray, failure bursts, RDP pre-auth floods, RDP from public addresses, logons to many hosts, local-account network logons (NTLM), NewCredentials / pass-the-hash logons, alternate credentials, privileged group changes, Kerberoasting, DC ticket fan-out, lockouts, log clearing and after-hours interactive logons. Each has MITRE ATT&amp;CK ids and reasoning.</li>
+    </ul>
+    <h3>Exploring</h3>
+    <ul>
+      <li>Click a row for every field plus pivots: open the session, the session's events, a <b>logon story</b> (&plusmn;30 min of events sharing the user, IP or host), or timeline / sessions for that user, IP or host.</li>
+      <li><b>IOCs&hellip;</b> (plus the toolkit <code>IOC.txt</code> next to this app) highlights matching rows; <b>IOC hits only</b> filters to them. <b>Export view &rarr; CSV</b> writes the full filtered set; <b>Copy for case notes</b> formats lines for a report.</li>
+      <li><b>Known hosts&hellip;</b> maps IP addresses to host names (typed, pasted, loaded from a file, or accepted from names the logs resolved). The names appear next to the IPs everywhere and are searchable; exports keep the logged values. Saved with the results as <code>knownhosts.csv</code>.</li>
+      <li>The <b>date window</b> is one setting: the engine window in the control panel and the from / to filter above the tables always match. The filter applies at once; the engine window applies on the next <b>Process</b>.</li>
+      <li>Process events (4688 / Sysmon 1) are kept only when they match a remote-exec pattern or ran inside a remote logon session. Machine / system-account logon noise is dropped unless you tick <i>keep</i>.</li>
+    </ul>
+    <h3>Command line</h3>
+    <p><code>mshta "LoginActivityTriage.hta" "&lt;evtxDir | file.evtx | live | resultsDir&gt;" ["&lt;outDir&gt;"] [/auto] [/tz:&lt;id&gt;] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]</code></p>
+    <ul>
+      <li>A results folder (with <code>summary.json</code>) opens straight in the viewer; an EVTX source is prefilled and processed with <code>/auto</code>. <code>/from</code> <code>/to</code> set the date window (engine import window and view filter).</li>
+      <li>Output goes to <code>_Processed\&lt;host&gt;\LoginActivityTriage</code> next to this app; a <code>runinfo.json</code> provenance entry with a triage summary is appended after each run (read by the DFIR Artifact Finder).</li>
+    </ul>
+    <h3>Limits</h3>
+    <ul>
+      <li>Detection depends on what was audited and collected: no Security log means no logons, 4697 or share access; no 4688 / Sysmon means no command lines. Absence of evidence is not evidence of absence.</li>
+      <li>All times are UTC. Only the after-hours rule uses the chosen zone.</li>
+    </ul>
+    <p class="muted" style="font-size:11px">MIT &copy; 2026 Ben Morris</p>
+  </div>
+</div>
+</body>
+</html>

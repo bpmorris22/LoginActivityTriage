@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\LoginActivityTriage.Core\LoginActivityTriage.Core.csproj" />
+    <ProjectReference Include="..\LoginActivityTriage.Analytics\LoginActivityTriage.Analytics.csproj" />
   </ItemGroup>
 
 </Project>

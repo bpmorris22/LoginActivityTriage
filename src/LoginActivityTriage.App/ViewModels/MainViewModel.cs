@@ -1,8 +1,11 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Windows;
 using LoginActivityTriage.Analytics;
 using LoginActivityTriage.App.Mvvm;
+using LoginActivityTriage.Core.Mapping;
 using LoginActivityTriage.Core.Models;
 using LoginActivityTriage.Export;
 using LoginActivityTriage.Parsing;
@@ -12,67 +15,79 @@ using Microsoft.Win32;
 namespace LoginActivityTriage.App.ViewModels;
 
 /// <summary>
-/// Root view model: owns the open case, the in-memory event set, the timeline
-/// filter, the dashboard projections and all top-level commands.
+/// Root view model: owns the open case, the in-memory event set, the timeline filter, the
+/// dashboard projections, stitched remote sessions and all top-level commands.
+///
+/// Memory: raw event XML is written to the case database during import and released from
+/// memory; the detail pane reloads it on demand for the selected row.
 /// </summary>
 public sealed class MainViewModel : ObservableObject
 {
     private readonly List<NormalizedEvent> _allEvents = new();
 
-    /// <summary>The current filtered/IOC-restricted subset that feeds every view
-    /// (timeline, RDP, failed, admin, pivots and the dashboard counters).</summary>
+    /// <summary>The current filtered / IOC-restricted subset that feeds every event view.</summary>
     private List<NormalizedEvent> _view = new();
 
-    /// <summary>Investigator-supplied indicators; drives row highlighting and the
-    /// "IOC matches only" filter across all views.</summary>
+    private List<RemoteSession> _sessions = new();
+
     private readonly IocSet _iocs = new();
 
     private CaseStore? _store;
+    private CancellationTokenSource? _importCts;
 
-    public ObservableCollection<NormalizedEvent> Events { get; } = new();
-    public ObservableCollection<Finding> Findings { get; } = new();
+    public RangeObservableCollection<NormalizedEvent> Events { get; } = new();
+    public RangeObservableCollection<Finding> Findings { get; } = new();
+    public RangeObservableCollection<RemoteSession> RemoteSessions { get; } = new();
     public ObservableCollection<string> ErrorLog { get; } = new();
 
-    public ObservableCollection<StatItem> TopUsersSuccess { get; } = new();
-    public ObservableCollection<StatItem> TopUsersFailed { get; } = new();
-    public ObservableCollection<StatItem> TopSourceIps { get; } = new();
-    public ObservableCollection<StatItem> TopHosts { get; } = new();
-    public ObservableCollection<StatItem> TopPrivilegedUsers { get; } = new();
-    public ObservableCollection<StatItem> TopRdpSourceIps { get; } = new();
+    public RangeObservableCollection<StatItem> TopUsersSuccess { get; } = new();
+    public RangeObservableCollection<StatItem> TopUsersFailed { get; } = new();
+    public RangeObservableCollection<StatItem> TopSourceIps { get; } = new();
+    public RangeObservableCollection<StatItem> TopHosts { get; } = new();
+    public RangeObservableCollection<StatItem> TopPrivilegedUsers { get; } = new();
+    public RangeObservableCollection<StatItem> TopRdpSourceIps { get; } = new();
 
-    // Dedicated-tab subsets and pivots, all derived from the full event set.
-    public ObservableCollection<NormalizedEvent> RdpEvents { get; } = new();
-    public ObservableCollection<NormalizedEvent> FailedEvents { get; } = new();
-    public ObservableCollection<NormalizedEvent> AdminEvents { get; } = new();
-    public ObservableCollection<SourceIpPivot> SourceIpPivots { get; } = new();
-    public ObservableCollection<UserPivot> UserPivots { get; } = new();
-    public ObservableCollection<HostPivot> HostPivots { get; } = new();
+    public RangeObservableCollection<NormalizedEvent> RdpEvents { get; } = new();
+    public RangeObservableCollection<NormalizedEvent> FailedEvents { get; } = new();
+    public RangeObservableCollection<NormalizedEvent> AdminEvents { get; } = new();
+    public RangeObservableCollection<SourceIpPivot> SourceIpPivots { get; } = new();
+    public RangeObservableCollection<UserPivot> UserPivots { get; } = new();
+    public RangeObservableCollection<HostPivot> HostPivots { get; } = new();
 
     /// <summary>Raised when a Logon Story should be shown; the view opens the window.</summary>
     public event Action<LogonStoryViewModel>? LogonStoryRequested;
 
     public MainViewModel()
     {
-        NewCaseCommand = new RelayCommand(NewCase);
+        NewCaseCommand = new RelayCommand(NewCase, () => !IsBusy);
         ImportFolderCommand = new RelayCommand(ImportFolder, () => !IsBusy);
+        CancelImportCommand = new RelayCommand(() => _importCts?.Cancel(), () => IsBusy);
         ApplyFilterCommand = new RelayCommand(ApplyFilter);
         ClearFilterCommand = new RelayCommand(ClearFilter);
         ExportCsvCommand = new RelayCommand(ExportCsv, () => Events.Count > 0);
         ExportHtmlCommand = new RelayCommand(ExportHtml, () => Events.Count > 0);
+        ExportReportCommand = new RelayCommand(ExportReport, () => Findings.Count > 0 || RemoteSessions.Count > 0);
         ShowLogonStoryCommand = new RelayCommand(ShowLogonStory);
+        ShowSessionEventsCommand = new RelayCommand(ShowSessionEvents);
         QuickFilterCommand = new RelayCommand(p => ApplyQuickFilter(p as string));
         ApplyIocsCommand = new RelayCommand(ApplyIocs);
         ClearIocsCommand = new RelayCommand(ClearIocs);
         StoryWindowMinutes = 30;
+
+        TimeZones = TimeZoneInfo.GetSystemTimeZones().ToList();
+        _selectedTimeZone = TimeZones.FirstOrDefault(z => z.Id == TimeZoneInfo.Local.Id) ?? TimeZoneInfo.Utc;
     }
 
     public RelayCommand NewCaseCommand { get; }
     public RelayCommand ImportFolderCommand { get; }
+    public RelayCommand CancelImportCommand { get; }
     public RelayCommand ApplyFilterCommand { get; }
     public RelayCommand ClearFilterCommand { get; }
     public RelayCommand ExportCsvCommand { get; }
     public RelayCommand ExportHtmlCommand { get; }
+    public RelayCommand ExportReportCommand { get; }
     public RelayCommand ShowLogonStoryCommand { get; }
+    public RelayCommand ShowSessionEventsCommand { get; }
     public RelayCommand QuickFilterCommand { get; }
     public RelayCommand ApplyIocsCommand { get; }
     public RelayCommand ClearIocsCommand { get; }
@@ -99,6 +114,38 @@ public sealed class MainViewModel : ObservableObject
     private double _progressMax = 1;
     public double ProgressMax { get => _progressMax; set => SetProperty(ref _progressMax, value); }
 
+    // ---- Analysis options ----
+
+    public IReadOnlyList<TimeZoneInfo> TimeZones { get; }
+
+    private TimeZoneInfo _selectedTimeZone;
+    /// <summary>Zone the after-hours rule runs in (set it to the evidence site's zone). Re-runs analytics.</summary>
+    public TimeZoneInfo SelectedTimeZone
+    {
+        get => _selectedTimeZone;
+        set
+        {
+            if (value is null || !SetProperty(ref _selectedTimeZone, value)) return;
+            if (_allEvents.Count > 0 && !IsBusy) { RecomputeAnalytics(); RefreshDashboard(); }
+        }
+    }
+
+    private bool _useHostTimeZones = true;
+    /// <summary>Evaluate after-hours in each host's own zone (System 6013); the selected zone is the fallback.</summary>
+    public bool UseHostTimeZones
+    {
+        get => _useHostTimeZones;
+        set
+        {
+            if (!SetProperty(ref _useHostTimeZones, value)) return;
+            if (_allEvents.Count > 0 && !IsBusy) { RecomputeAnalytics(); RefreshDashboard(); }
+        }
+    }
+
+    private bool _dropNoiseOnImport = true;
+    /// <summary>Skip machine / system-account logon, logoff and ticket events while importing.</summary>
+    public bool DropNoiseOnImport { get => _dropNoiseOnImport; set => SetProperty(ref _dropNoiseOnImport, value); }
+
     // ---- Filter inputs ----
 
     private string? _filterUser;
@@ -113,12 +160,14 @@ public sealed class MainViewModel : ObservableObject
     public string? FilterLogonType { get => _filterLogonType; set => SetProperty(ref _filterLogonType, value); }
     private string? _filterAuthPackage;
     public string? FilterAuthPackage { get => _filterAuthPackage; set => SetProperty(ref _filterAuthPackage, value); }
+    private string? _filterTechnique;
+    public string? FilterTechnique { get => _filterTechnique; set => SetProperty(ref _filterTechnique, value); }
     private DateTime? _filterFrom;
     public DateTime? FilterFrom { get => _filterFrom; set => SetProperty(ref _filterFrom, value); }
     private DateTime? _filterTo;
     public DateTime? FilterTo { get => _filterTo; set => SetProperty(ref _filterTo, value); }
 
-    // Optional time-of-day for the date range (HH:mm or HH:mm:ss). Empty => whole day.
+    // Optional time-of-day (UTC) for the date range (HH:mm or HH:mm:ss). Empty => whole day.
     private string? _filterFromTime;
     public string? FilterFromTime { get => _filterFromTime; set => SetProperty(ref _filterFromTime, value); }
     private string? _filterToTime;
@@ -132,6 +181,8 @@ public sealed class MainViewModel : ObservableObject
     public bool PrivilegedOnly { get => _privilegedOnly; set => SetProperty(ref _privilegedOnly, value); }
     private bool _rdpOnly;
     public bool RdpOnly { get => _rdpOnly; set => SetProperty(ref _rdpOnly, value); }
+    private bool _remoteExecOnly;
+    public bool RemoteExecOnly { get => _remoteExecOnly; set => SetProperty(ref _remoteExecOnly, value); }
     private bool _excludeMachineAccounts;
     public bool ExcludeMachineAccounts { get => _excludeMachineAccounts; set => SetProperty(ref _excludeMachineAccounts, value); }
     private bool _excludeLocalBlank;
@@ -140,8 +191,6 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>Suppresses auto-apply while several filter fields are reset at once.</summary>
     private bool _suppressApply;
 
-    /// <summary>When set, every view is restricted to events that match a loaded IOC.
-    /// Toggling re-applies immediately (no need to click Apply Filter).</summary>
     private bool _iocOnly;
     public bool IocOnly
     {
@@ -149,7 +198,7 @@ public sealed class MainViewModel : ObservableObject
         set { if (SetProperty(ref _iocOnly, value) && !_suppressApply) ApplyFilter(); }
     }
 
-    // ---- IOC inputs (pasted indicator lists) ----
+    // ---- IOC inputs ----
 
     private string? _iocHosts;
     public string? IocHosts { get => _iocHosts; set => SetProperty(ref _iocHosts, value); }
@@ -158,33 +207,72 @@ public sealed class MainViewModel : ObservableObject
     private string? _iocUsers;
     public string? IocUsers { get => _iocUsers; set => SetProperty(ref _iocUsers, value); }
 
-    /// <summary>Human-readable summary of the loaded IOCs and how many events match.</summary>
     public string IocSummary => _iocs.IsEmpty
         ? "No IOCs loaded. Paste hostnames, IPs and/or usernames above, then Apply."
         : $"{_iocs.HostCount} host(s), {_iocs.IpCount} IP(s), {_iocs.UserCount} user(s) loaded — " +
-          $"{_allEvents.Count(e => e.IsIoc)} matching event(s) flagged.";
+          $"{_allEvents.Count(e => e.IsIoc)} matching event(s), {_sessions.Count(s => s.IsIoc)} session(s) flagged.";
+
+    // ---- Selection / detail ----
 
     private NormalizedEvent? _selectedEvent;
-    public NormalizedEvent? SelectedEvent { get => _selectedEvent; set => SetProperty(ref _selectedEvent, value); }
+    public NormalizedEvent? SelectedEvent
+    {
+        get => _selectedEvent;
+        set { if (SetProperty(ref _selectedEvent, value)) OnPropertyChanged(nameof(SelectedEventDetail)); }
+    }
+
+    private RemoteSession? _selectedSession;
+    public RemoteSession? SelectedSession { get => _selectedSession; set => SetProperty(ref _selectedSession, value); }
+
+    /// <summary>All populated fields of the selected event plus its original XML (loaded from the case on demand).</summary>
+    public string SelectedEventDetail
+    {
+        get
+        {
+            var e = _selectedEvent;
+            if (e is null) return "Select an event to see every field and the original event XML.";
+            var sb = new StringBuilder();
+            foreach (var col in CsvExporter.EventColumns)
+            {
+                var v = col.Value(e);
+                if (!string.IsNullOrEmpty(v)) sb.Append(col.Header.PadRight(22)).Append(v).AppendLine();
+            }
+            string? xml = e.RawXml;
+            if (xml is null && _store is not null && e.Id > 0)
+            {
+                try { xml = _store.GetRawXml(e.Id); } catch (Exception ex) { xml = $"(could not load raw XML: {ex.Message})"; }
+            }
+            sb.AppendLine().AppendLine("---- Original event XML ----").Append(PrettyXml(xml) ?? "(not stored)");
+            return sb.ToString();
+        }
+    }
+
+    private static string? PrettyXml(string? xml)
+    {
+        if (string.IsNullOrWhiteSpace(xml)) return null;
+        try { return System.Xml.Linq.XDocument.Parse(xml).ToString(); } catch { return xml; }
+    }
 
     public int StoryWindowMinutes { get; set; }
 
-    // ---- Dashboard counters ----
+    // ---- Dashboard counters (track the current filtered view) ----
 
-    // Counters reflect the current filtered view so the dashboard tracks any active filter.
     public int TotalEvents => _view.Count;
-    public int SuccessfulLogons => _view.Count(e => e.EventId == 4624);
-    public int FailedLogons => _view.Count(e => e.EventId == 4625);
-    public int RdpLogons => _view.Count(e => e.IsRdp);
+    public int SuccessfulLogons => _view.Count(e => e.CountsAsLogonSuccess);
+    public int FailedLogons => _view.Count(e => e.IsFailure);
+    public int RdpLogons => _view.Count(e => e.EventId == 4624 && e.LogonType is 10 or 12);
     public int ExplicitCredentialUse => _view.Count(e => e.EventId == 4648);
     public int PrivilegedLogons => _view.Count(e => e.IsPrivileged);
     public int UniqueUsers => _view.Where(e => !string.IsNullOrWhiteSpace(e.TargetUserName))
-        .Select(e => e.TargetUserName!).Distinct(StringComparer.OrdinalIgnoreCase).Count();
-    public int UniqueSourceIps => _view.Where(e => !string.IsNullOrWhiteSpace(e.SourceIp))
+        .Select(e => UserKey.Bare(e.TargetUserName)).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+    public int UniqueSourceIps => _view.Where(e => !IpUtil.IsLocalOrBlank(e.SourceIp))
         .Select(e => e.SourceIp!).Distinct(StringComparer.OrdinalIgnoreCase).Count();
     public int UniqueHosts => _view.Where(e => !string.IsNullOrWhiteSpace(e.Hostname))
-        .Select(e => e.Hostname!).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        .Select(e => HostKey.Of(e.Hostname)).Distinct(StringComparer.OrdinalIgnoreCase).Count();
     public int SuspiciousCount => Findings.Count;
+    public int HighFindings => Findings.Count(f => f.Severity >= FindingSeverity.High);
+    public int RemoteExecSessions => _sessions.Count(s => s.Direction == "Inbound" && s.Technique != RemoteTechnique.Rdp);
+    public int RdpSessions => _sessions.Count(s => s.Direction == "Inbound" && s.Technique == RemoteTechnique.Rdp);
 
     // ---- Commands ----
 
@@ -195,7 +283,7 @@ public sealed class MainViewModel : ObservableObject
             Title = "New or existing case database",
             Filter = "Triage case (*.latdb)|*.latdb|All files (*.*)|*.*",
             FileName = $"Case-{DateTime.Now:yyyyMMdd-HHmmss}.latdb",
-            OverwritePrompt = false,   // we present our own use/overwrite choice below
+            OverwritePrompt = false,
         };
         if (dlg.ShowDialog() != true) return;
 
@@ -211,15 +299,12 @@ public sealed class MainViewModel : ObservableObject
                 "Existing case database", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
 
             if (choice == MessageBoxResult.Cancel) return;
-
             if (choice == MessageBoxResult.Yes)
             {
                 OpenStore(dlg.FileName, createCase: false, name);
                 return;
             }
 
-            // Overwrite: dispose any open handle (also clears the SQLite pool) and
-            // remove the db plus its WAL/SHM sidecars.
             _store?.Dispose();
             _store = null;
             try
@@ -236,19 +321,11 @@ public sealed class MainViewModel : ObservableObject
         }
 
         OpenStore(dlg.FileName, createCase: true, name);
-        StatusText = $"Created case '{CaseName}'. Now import an EVTX folder.";
+        StatusText = $"Created case '{CaseName}' at {dlg.FileName}. Now import an EVTX folder.";
     }
 
     private void ImportFolder()
     {
-        if (_store is null)
-        {
-            // No explicit case yet: spin up a quick-triage case under TEMP.
-            var temp = Path.Combine(Path.GetTempPath(),
-                $"LoginTriage-{DateTime.Now:yyyyMMdd-HHmmss}.latdb");
-            OpenStore(temp, createCase: true, "Quick Triage");
-        }
-
         var folder = new OpenFolderDialog { Title = "Select folder containing EVTX files" };
         if (folder.ShowDialog() != true) return;
 
@@ -261,6 +338,16 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
+        if (_store is null)
+        {
+            // No explicit case yet: create one in a visible folder next to the evidence's parent,
+            // falling back to Documents, and say where it went.
+            var caseDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "LoginActivityTriage Cases");
+            var dbPath = Path.Combine(caseDir, $"QuickTriage-{DateTime.Now:yyyyMMdd-HHmmss}.latdb");
+            OpenStore(dbPath, createCase: true, "Quick Triage");
+            ErrorLog.Add($"Quick-triage case created at {dbPath}");
+        }
+
         RunImport(path, discovered.Count);
     }
 
@@ -270,20 +357,63 @@ public sealed class MainViewModel : ObservableObject
         ProgressValue = 0;
         ProgressMax = fileCount;
         StatusText = $"Importing {fileCount} EVTX file(s)...";
+        _importCts = new CancellationTokenSource();
+        var ct = _importCts.Token;
+        var store = _store!;
+        var existing = _allEvents.Select(e => e.DedupeKey).ToHashSet(StringComparer.Ordinal);
+        var context = _allEvents.Where(e => e.EventId == 4624).ToList();
+        var dropNoise = DropNoiseOnImport;
+        var imported = new List<NormalizedEvent>();
 
-        var batch = new List<NormalizedEvent>();
         var progress = new Progress<ImportProgress>(p =>
         {
             ProgressValue = p.FileIndex;
             StatusText = string.IsNullOrEmpty(p.CurrentFile)
-                ? $"Finalising... {p.EventsNormalisedSoFar} events"
-                : $"[{p.FileIndex + 1}/{p.FileCount}] {Path.GetFileName(p.CurrentFile)} - {p.EventsNormalisedSoFar} events";
+                ? $"Finalising... {p.EventsNormalisedSoFar:N0} events"
+                : $"[{p.FileIndex + 1}/{p.FileCount}] {Path.GetFileName(p.CurrentFile)} - {p.EventsNormalisedSoFar:N0} events";
         });
 
         Task.Run(() =>
         {
-            var importer = new EvtxImporter();
-            var summary = importer.Import(folder, e => batch.Add(e), progress);
+            var buffer = new List<NormalizedEvent>();
+            var candidates = new List<NormalizedEvent>();
+
+            void Flush()
+            {
+                if (buffer.Count == 0) return;
+                store.InsertEvents(buffer, dropRawXmlAfterInsert: true);
+                imported.AddRange(buffer.Where(e => e.Id != 0));
+                buffer.Clear();
+            }
+
+            var options = new ImportOptions
+            {
+                ExistingKeys = existing,
+                Keep = dropNoise ? e => !NoiseFilter.IsRoutineNoise(e) : null,
+            };
+
+            ImportSummary? summary = null;
+            try
+            {
+                summary = new EvtxImporter().Import(folder, e =>
+                {
+                    if (e.KeepOnlyIfLinked) candidates.Add(e);
+                    else
+                    {
+                        buffer.Add(e);
+                        if (buffer.Count >= 5000) Flush();
+                    }
+                }, progress, ct, options);
+            }
+            catch (OperationCanceledException)
+            {
+                // keep what was read so far
+            }
+            Flush();
+            buffer.AddRange(ProcessEventFilter.Apply(candidates, imported.Concat(context)));
+            Flush();
+            if (summary is not null)
+                foreach (var f in summary.Files) store.RecordImportedFile(f);
             return summary;
         }).ContinueWith(t =>
         {
@@ -297,25 +427,24 @@ public sealed class MainViewModel : ObservableObject
                 }
 
                 var summary = t.Result;
-                // Persist to SQLite (assigns row ids) and record per-file outcomes.
-                _store!.InsertEvents(batch);
-                foreach (var f in summary.Files)
-                    _store!.RecordImportedFile(f);
-
-                _allEvents.AddRange(batch);
-                foreach (var err in summary.Errors) ErrorLog.Add(err);
+                _allEvents.AddRange(imported);
+                if (summary is not null) foreach (var err in summary.Errors) ErrorLog.Add(err);
 
                 RecomputeAnalytics();
-                ApplyIocFlags();   // flag any events matching already-loaded IOCs
-                ApplyFilter();     // builds _view and refreshes every view + dashboard
+                ApplyIocFlags();
+                ApplyFilter();
 
-                StatusText = $"Imported {summary.TotalEventsNormalised} events from " +
-                             $"{summary.FilesProcessed} file(s); {summary.TotalSkipped} record(s) skipped, " +
-                             $"{summary.FilesFailed} file(s) failed.";
+                StatusText = summary is null
+                    ? $"Import cancelled - {imported.Count:N0} event(s) imported before stopping."
+                    : $"Imported {imported.Count:N0} events from {summary.FilesProcessed} file(s); " +
+                      $"{summary.TotalDuplicates:N0} duplicate(s) and {summary.TotalFiltered:N0} noise event(s) skipped, " +
+                      $"{summary.TotalSkipped:N0} unreadable record(s), {summary.FilesFailed} file(s) failed.";
             }
             finally
             {
                 IsBusy = false;
+                _importCts?.Dispose();
+                _importCts = null;
             }
         }, TaskScheduler.FromCurrentSynchronizationContext());
     }
@@ -324,9 +453,11 @@ public sealed class MainViewModel : ObservableObject
     {
         _store?.Dispose();
         _allEvents.Clear();
+        _sessions = new();
         _view = new();
-        Events.Clear();
-        Findings.Clear();
+        Events.ReplaceAll(Array.Empty<NormalizedEvent>());
+        Findings.ReplaceAll(Array.Empty<Finding>());
+        RemoteSessions.ReplaceAll(Array.Empty<RemoteSession>());
         ErrorLog.Clear();
 
         _suppressApply = true;
@@ -345,22 +476,22 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        // Reopen an existing case: restore its events, findings and IOCs.
+        // Reopen an existing case: restore events and IOCs; analytics are recomputed so
+        // sessions and findings always reflect the current rule set.
         var info = _store.LoadLatestCase();
         CaseName = info?.Name ?? caseName;
-
         _allEvents.AddRange(_store.QueryEvents());
-        foreach (var f in _store.QueryFindings()) Findings.Add(f);
 
         var (h, i, u) = _store.LoadIocs();
         IocHosts = h; IocIps = i; IocUsers = u;
         _iocs.Set(h, i, u);
+
+        RecomputeAnalytics();
         ApplyIocFlags();
         OnPropertyChanged(nameof(IocSummary));
-
         ApplyFilter();
-        StatusText = $"Opened case '{CaseName}' — {_allEvents.Count} event(s), " +
-                     $"{Findings.Count} finding(s) restored.";
+        StatusText = $"Opened case '{CaseName}' — {_allEvents.Count:N0} event(s), {_sessions.Count:N0} remote session(s), " +
+                     $"{Findings.Count} finding(s).";
     }
 
     private EventFilter BuildFilter()
@@ -377,34 +508,30 @@ public sealed class MainViewModel : ObservableObject
             SourceIp = FilterSourceIp,
             LogonType = lt,
             AuthPackage = FilterAuthPackage,
+            Technique = FilterTechnique,
             Success = SuccessOnly ? true : (FailureOnly ? false : (bool?)null),
             PrivilegedOnly = PrivilegedOnly,
             RdpOnly = RdpOnly,
+            RemoteExecOnly = RemoteExecOnly,
             ExcludeMachineAccounts = ExcludeMachineAccounts,
             ExcludeLocalOrBlankSource = ExcludeLocalBlank,
         };
     }
 
     /// <summary>
-    /// Combines a picked date with an optional time-of-day string. When no time is
-    /// given the bound is the start of the day, or (for the upper bound) the last
-    /// tick of the day so the whole "To" date is inclusive.
+    /// Combines a picked date with an optional time-of-day as a UTC bound (the grid shows UTC).
+    /// Without a time the bound is the start of the day or, for the upper bound, its last tick.
     /// </summary>
     private static DateTimeOffset? CombineDateAndTime(DateTime? date, string? time, bool endOfDayIfNoTime)
     {
         if (date is null) return null;
         var day = date.Value.Date;
         if (!string.IsNullOrWhiteSpace(time) &&
-            TimeSpan.TryParse(time.Trim(), System.Globalization.CultureInfo.InvariantCulture, out var ts))
-            return new DateTimeOffset(day + ts);
-        return new DateTimeOffset(endOfDayIfNoTime ? day.AddDays(1).AddTicks(-1) : day);
+            TimeSpan.TryParse(time.Trim(), CultureInfo.InvariantCulture, out var ts))
+            return new DateTimeOffset(day + ts, TimeSpan.Zero);
+        return new DateTimeOffset(endOfDayIfNoTime ? day.AddDays(1).AddTicks(-1) : day, TimeSpan.Zero);
     }
 
-    /// <summary>
-    /// Rebuilds the shared filtered view from the field filter (and the optional
-    /// "IOC matches only" toggle) and refreshes EVERY downstream view: the timeline,
-    /// the RDP / failed / admin subsets, the pivots and the dashboard counters.
-    /// </summary>
     private void ApplyFilter()
     {
         var filter = BuildFilter();
@@ -412,12 +539,11 @@ public sealed class MainViewModel : ObservableObject
         if (IocOnly) q = q.Where(e => e.IsIoc);
         _view = q.ToList();
 
-        Events.Clear();
-        foreach (var e in _view) Events.Add(e);
+        Events.ReplaceAll(_view);
+        RemoteSessions.ReplaceAll(IocOnly ? _sessions.Where(s => s.IsIoc) : _sessions);
+        RefreshDashboard();
 
-        RefreshDashboard();   // counters, top-lists and derived views all read _view
-
-        StatusText = $"Showing {_view.Count} of {_allEvents.Count} events" +
+        StatusText = $"Showing {_view.Count:N0} of {_allEvents.Count:N0} events" +
                      (IocOnly ? " (IOC matches only)." : ".");
     }
 
@@ -429,7 +555,6 @@ public sealed class MainViewModel : ObservableObject
         ApplyFilter();
     }
 
-    /// <summary>Applies one of the section-8 defensive quick filters.</summary>
     private void ApplyQuickFilter(string? key)
     {
         _suppressApply = true;
@@ -437,7 +562,6 @@ public sealed class MainViewModel : ObservableObject
         switch (key)
         {
             case "RDP": RdpOnly = true; break;
-            case "FailedThenSuccess": FailureOnly = true; break; // narrows view; Findings tab has the correlation
             case "Privileged": PrivilegedOnly = true; break;
             case "Explicit": FilterEventId = "4648"; break;
             case "NTLM": FilterAuthPackage = "NTLM"; break;
@@ -448,6 +572,10 @@ public sealed class MainViewModel : ObservableObject
             case "LogonType10": FilterLogonType = "10"; break;
             case "ExcludeMachine": ExcludeMachineAccounts = true; break;
             case "Failures": FailureOnly = true; break;
+            case "RemoteExec": RemoteExecOnly = true; break;
+            case "PsExec": FilterTechnique = RemoteTechnique.PsExec; break;
+            case "PsRemoting": FilterTechnique = RemoteTechnique.PsRemoting; break;
+            case "LogCleared": FilterTechnique = RemoteTechnique.LogCleared; break;
             case "Iocs": IocOnly = true; break;
         }
         _suppressApply = false;
@@ -456,26 +584,24 @@ public sealed class MainViewModel : ObservableObject
 
     private void ClearFilterFieldsOnly()
     {
-        FilterUser = FilterHost = FilterSourceIp = FilterEventId = FilterLogonType = FilterAuthPackage = null;
+        FilterUser = FilterHost = FilterSourceIp = FilterEventId = FilterLogonType = FilterAuthPackage = FilterTechnique = null;
         FilterFrom = FilterTo = null;
         FilterFromTime = FilterToTime = null;
-        SuccessOnly = FailureOnly = PrivilegedOnly = RdpOnly = ExcludeMachineAccounts = ExcludeLocalBlank = false;
+        SuccessOnly = FailureOnly = PrivilegedOnly = RdpOnly = RemoteExecOnly = ExcludeMachineAccounts = ExcludeLocalBlank = false;
         IocOnly = false;
     }
 
     // ---- IOCs ----
 
-    /// <summary>Parses the pasted indicator lists, flags matching events and refreshes views.</summary>
     private void ApplyIocs()
     {
         _iocs.Set(IocHosts, IocIps, IocUsers);
         ApplyIocFlags();
-        _store?.SaveIocs(IocHosts, IocIps, IocUsers);   // persist with the case
+        _store?.SaveIocs(IocHosts, IocIps, IocUsers);
         OnPropertyChanged(nameof(IocSummary));
-        ApplyFilter();   // repaint highlights + recompute pivots against the new IOCs
+        ApplyFilter();
     }
 
-    /// <summary>Clears all loaded indicators and the IOC-only filter.</summary>
     private void ClearIocs()
     {
         _suppressApply = true;
@@ -489,11 +615,13 @@ public sealed class MainViewModel : ObservableObject
         ApplyFilter();
     }
 
-    /// <summary>(Re)computes the per-event IOC flag used for row highlighting.</summary>
     private void ApplyIocFlags()
     {
         foreach (var e in _allEvents) e.IsIoc = _iocs.Matches(e);
+        foreach (var s in _sessions) s.IsIoc = _iocs.Matches(s) || s.Events.Any(e => e.IsIoc);
     }
+
+    // ---- Export ----
 
     private void ExportCsv()
     {
@@ -501,11 +629,11 @@ public sealed class MainViewModel : ObservableObject
         {
             Title = "Export current view to CSV",
             Filter = "CSV file (*.csv)|*.csv",
-            FileName = $"LogonTimeline-{DateTime.Now:yyyyMMdd-HHmmss}.csv",
+            FileName = $"LogonTimeline-{DateTime.UtcNow:yyyyMMdd-HHmmss}Z.csv",
         };
         if (dlg.ShowDialog() != true) return;
         CsvExporter.Export(Events, dlg.FileName);
-        StatusText = $"Exported {Events.Count} rows to {dlg.FileName}";
+        StatusText = $"Exported {Events.Count:N0} rows to {dlg.FileName}";
     }
 
     private void ExportHtml()
@@ -514,12 +642,32 @@ public sealed class MainViewModel : ObservableObject
         {
             Title = "Export current view to HTML",
             Filter = "HTML file (*.html)|*.html",
-            FileName = $"LogonTimeline-{DateTime.Now:yyyyMMdd-HHmmss}.html",
+            FileName = $"LogonTimeline-{DateTime.UtcNow:yyyyMMdd-HHmmss}Z.html",
         };
         if (dlg.ShowDialog() != true) return;
         HtmlExporter.ExportEvents(Events, dlg.FileName, $"Logon Timeline - {CaseName}");
-        StatusText = $"Exported {Events.Count} rows to {dlg.FileName}";
+        StatusText = $"Exported {Events.Count:N0} rows to {dlg.FileName}";
     }
+
+    /// <summary>Findings + remote sessions as HTML and CSV, for the case notes.</summary>
+    private void ExportReport()
+    {
+        var dlg = new SaveFileDialog
+        {
+            Title = "Export findings and remote sessions",
+            Filter = "HTML report (*.html)|*.html",
+            FileName = $"{CaseName}-Findings-{DateTime.UtcNow:yyyyMMdd-HHmmss}Z.html",
+        };
+        if (dlg.ShowDialog() != true) return;
+        var baseName = Path.Combine(Path.GetDirectoryName(dlg.FileName)!, Path.GetFileNameWithoutExtension(dlg.FileName));
+        HtmlExporter.ExportFindings(Findings, dlg.FileName, $"Findings - {CaseName}");
+        HtmlExporter.ExportSessions(RemoteSessions, baseName + "-sessions.html", $"Remote sessions - {CaseName}");
+        CsvExporter.Write(baseName + "-findings.csv", Findings, CsvExporter.FindingColumns);
+        CsvExporter.Write(baseName + "-sessions.csv", RemoteSessions, CsvExporter.SessionColumns);
+        StatusText = $"Exported {Findings.Count} finding(s) and {RemoteSessions.Count} session(s) next to {dlg.FileName}";
+    }
+
+    // ---- Stories ----
 
     private void ShowLogonStory(object? parameter)
     {
@@ -530,19 +678,34 @@ public sealed class MainViewModel : ObservableObject
                 "Logon Story", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        var story = LogonStoryViewModel.BuildForEvent(anchor, _allEvents, StoryWindowMinutes);
-        LogonStoryRequested?.Invoke(story);
+        LogonStoryRequested?.Invoke(LogonStoryViewModel.BuildForEvent(anchor, _allEvents, StoryWindowMinutes));
     }
+
+    private void ShowSessionEvents(object? parameter)
+    {
+        var s = parameter as RemoteSession ?? SelectedSession;
+        if (s is null)
+        {
+            MessageBox.Show("Select a remote session first.", "Remote session", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        LogonStoryRequested?.Invoke(LogonStoryViewModel.BuildForSession(s));
+    }
+
+    // ---- Analytics / dashboard ----
 
     private void RecomputeAnalytics()
     {
-        Findings.Clear();
-        var analyzer = new SuspiciousSequenceAnalyzer();
-        foreach (var f in analyzer.Analyze(_allEvents).OrderByDescending(x => x.Severity).ThenBy(x => x.Timestamp))
-        {
-            Findings.Add(f);
-            _store?.InsertFinding(f);
-        }
+        var analyzer = new SuspiciousSequenceAnalyzer(new AnalyzerOptions { TimeZone = SelectedTimeZone, UseHostTimeZones = UseHostTimeZones });
+        foreach (var e in _allEvents) e.RemoteSessionRef = null;
+        var result = analyzer.Run(_allEvents);
+        _sessions = result.Sessions;
+        foreach (var s in _sessions) s.IsIoc = _iocs.Matches(s);
+        Findings.ReplaceAll(result.Findings);
+        RemoteSessions.ReplaceAll(_sessions);
+        try { _store?.ReplaceFindings(result.Findings); }
+        catch (Exception ex) { ErrorLog.Add("Could not store findings: " + ex.Message); }
+        OnPropertyChanged(nameof(IocSummary));
     }
 
     private void RefreshDashboard()
@@ -552,46 +715,30 @@ public sealed class MainViewModel : ObservableObject
                      nameof(TotalEvents), nameof(SuccessfulLogons), nameof(FailedLogons),
                      nameof(RdpLogons), nameof(ExplicitCredentialUse), nameof(PrivilegedLogons),
                      nameof(UniqueUsers), nameof(UniqueSourceIps), nameof(UniqueHosts),
-                     nameof(SuspiciousCount), nameof(CaseName),
+                     nameof(SuspiciousCount), nameof(HighFindings), nameof(RemoteExecSessions),
+                     nameof(RdpSessions), nameof(CaseName),
                  })
             OnPropertyChanged(name);
 
-        Fill(TopUsersSuccess, _view.Where(e => e.EventId == 4624 && !string.IsNullOrWhiteSpace(e.TargetUserName)), e => e.TargetUserName!);
-        Fill(TopUsersFailed, _view.Where(e => e.EventId == 4625 && !string.IsNullOrWhiteSpace(e.TargetUserName)), e => e.TargetUserName!);
-        Fill(TopSourceIps, _view.Where(e => !string.IsNullOrWhiteSpace(e.SourceIp)), e => e.SourceIp!);
-        Fill(TopHosts, _view.Where(e => !string.IsNullOrWhiteSpace(e.Hostname)), e => e.Hostname!);
-        Fill(TopPrivilegedUsers, _view.Where(e => e.IsPrivileged && !string.IsNullOrWhiteSpace(e.TargetUserName)), e => e.TargetUserName!);
-        Fill(TopRdpSourceIps, _view.Where(e => e.IsRdp && !string.IsNullOrWhiteSpace(e.SourceIp)), e => e.SourceIp!);
+        Fill(TopUsersSuccess, _view.Where(e => e.CountsAsLogonSuccess && !e.IsNoiseAccount && !string.IsNullOrWhiteSpace(e.TargetUserName)), e => UserKey.Bare(e.TargetUserName));
+        Fill(TopUsersFailed, _view.Where(e => e.IsFailure && !string.IsNullOrWhiteSpace(e.TargetUserName)), e => UserKey.Bare(e.TargetUserName));
+        Fill(TopSourceIps, _view.Where(e => !IpUtil.IsLocalOrBlank(e.SourceIp)), e => e.SourceIp!);
+        Fill(TopHosts, _view.Where(e => !string.IsNullOrWhiteSpace(e.Hostname)), e => HostKey.Of(e.Hostname));
+        Fill(TopPrivilegedUsers, _view.Where(e => e.IsPrivileged && !string.IsNullOrWhiteSpace(e.TargetUserName)), e => UserKey.Bare(e.TargetUserName));
+        Fill(TopRdpSourceIps, _view.Where(e => e.IsInboundRdp && !IpUtil.IsLocalOrBlank(e.SourceIp)), e => e.SourceIp!);
 
-        RefreshDerivedViews();
+        RdpEvents.ReplaceAll(_view.Where(e => e.IsRdp));
+        FailedEvents.ReplaceAll(_view.Where(e => e.IsFailure));
+        AdminEvents.ReplaceAll(_view.Where(e => e.IsPrivileged || e.EventId == 4648));
+        SourceIpPivots.ReplaceAll(PivotBuilder.BySourceIp(_view, _iocs));
+        UserPivots.ReplaceAll(PivotBuilder.ByUser(_view, _iocs));
+        HostPivots.ReplaceAll(PivotBuilder.ByHost(_view, _iocs));
     }
 
-    /// <summary>Rebuilds the dedicated-tab subsets and the pivot grids from the full event set.</summary>
-    private void RefreshDerivedViews()
-    {
-        Replace(RdpEvents, _view.Where(e => e.IsRdp));
-        Replace(FailedEvents, _view.Where(e => e.IsFailure));
-        // Admin usage: privileged sessions, elevated logons and explicit-credential use.
-        Replace(AdminEvents, _view.Where(e => e.IsPrivileged || e.EventId == 4648));
-        Replace(SourceIpPivots, PivotBuilder.BySourceIp(_view, _iocs));
-        Replace(UserPivots, PivotBuilder.ByUser(_view, _iocs));
-        Replace(HostPivots, PivotBuilder.ByHost(_view, _iocs));
-    }
-
-    private static void Replace<T>(ObservableCollection<T> target, IEnumerable<T> source)
-    {
-        target.Clear();
-        foreach (var item in source) target.Add(item);
-    }
-
-    private static void Fill(ObservableCollection<StatItem> target,
-        IEnumerable<NormalizedEvent> source, Func<NormalizedEvent, string> key)
-    {
-        target.Clear();
-        foreach (var g in source.GroupBy(key, StringComparer.OrdinalIgnoreCase)
-                     .Select(g => new StatItem(g.Key, g.Count()))
-                     .OrderByDescending(s => s.Count)
-                     .Take(10))
-            target.Add(g);
-    }
+    private static void Fill(RangeObservableCollection<StatItem> target,
+        IEnumerable<NormalizedEvent> source, Func<NormalizedEvent, string> key) =>
+        target.ReplaceAll(source.GroupBy(key, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new StatItem(g.Key, g.Count()))
+            .OrderByDescending(s => s.Count)
+            .Take(10));
 }

@@ -94,7 +94,7 @@ internal static class SampleEvents
     public const string Malformed = @"<Event><System><EventID>4624</EventID";
 
     public const string UnsupportedEvent = @"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>
-  <System><EventID>1102</EventID><Channel>Security</Channel>
+  <System><EventID>4700</EventID><Channel>Security</Channel>
   <TimeCreated SystemTime='2026-06-20T13:45:12Z'/></System>
   <EventData><Data Name='SubjectUserName'>jdoe</Data></EventData>
 </Event>";

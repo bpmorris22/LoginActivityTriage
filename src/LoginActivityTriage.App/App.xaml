@@ -7,6 +7,7 @@
     <Application.Resources>
         <conv:ElevatedToTextConverter x:Key="ElevatedToText" />
         <conv:BoolToYesNoConverter x:Key="BoolToYesNo" />
+        <conv:UtcTimeConverter x:Key="Utc" />
 
         <!-- Palette -->
         <SolidColorBrush x:Key="AppBackground" Color="#FF1E1F22" />

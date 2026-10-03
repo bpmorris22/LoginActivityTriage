@@ -1,0 +1,51 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+
+permissions:
+  contents: write   # needed only to attach release assets on version tags
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Test
+        run: dotnet test LoginActivityTriage.sln -c Release --logger "trx;LogFileName=results.trx"
+
+      - name: Publish engine (single-file, framework-dependent)
+        run: dotnet publish src/LoginActivityTriage.Cli/LoginActivityTriage.Cli.csproj -c Release -o dist
+
+      - name: Assemble HTA bundle
+        shell: pwsh
+        run: |
+          Copy-Item hta/LoginActivityTriage.hta dist/
+          Copy-Item README.md, LICENSE dist/
+          Copy-Item docs dist/docs -Recurse   # manual.html + screenshots; the HTA's Help opens it
+          Compress-Archive -Path dist/* -DestinationPath LoginActivityTriage-bundle.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LoginActivityTriage-bundle
+          path: |
+            dist/
+            LoginActivityTriage-bundle.zip
+
+      # The HTA's self-update and "Download engine" read these release assets by name.
+      - name: Release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/LoginActivityTriage.hta
+            dist/LoginActivityTriageCli.exe
+            LoginActivityTriage-bundle.zip

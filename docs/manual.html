@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login Activity Triage — Manual</title>
+<meta name="description" content="User manual for Login Activity Triage 0.2.1: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
+<style>
+  :root{
+    --bg:#ffffff; --panel:#f6f8fa; --text:#1f2328; --muted:#59636e; --line:#d1d9e0; --accent:#0969da;
+    --code:#eff2f5; --crit:#cf222e; --high:#bc4c00; --med:#9a6700; --low:#0969da; --note:#ddf4ff; --warn:#fff8c5;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0d1117; --panel:#161b22; --text:#e6edf3; --muted:#8b949e; --line:#30363d; --accent:#58a6ff;
+           --code:#1c2330; --crit:#ff6b6b; --high:#f0883e; --med:#e3b341; --low:#58a6ff; --note:#10263f; --warn:#2e2410; }
+  }
+  *{ box-sizing:border-box }
+  html{ scroll-behavior:smooth }
+  body{ margin:0; background:var(--bg); color:var(--text); font:16px/1.6 "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; }
+  a{ color:var(--accent) } a:hover{ text-decoration:underline }
+  code, kbd, pre{ font-family:Consolas, "Cascadia Mono", ui-monospace, monospace; font-size:.9em }
+  code{ background:var(--code); border-radius:5px; padding:1px 5px }
+  pre{ background:var(--code); border:1px solid var(--line); border-radius:8px; padding:12px 14px; overflow:auto; line-height:1.45 }
+  pre code{ background:none; padding:0 }
+  .layout{ display:grid; grid-template-columns:270px minmax(0,1fr); max-width:1280px; margin:0 auto }
+  nav.toc{ position:sticky; top:0; align-self:start; height:100vh; overflow:auto; padding:28px 18px 28px 24px; border-right:1px solid var(--line); font-size:14px }
+  nav.toc .brand{ font-weight:700; font-size:16px; margin-bottom:2px }
+  nav.toc .ver{ color:var(--muted); font-size:13px; margin-bottom:18px }
+  nav.toc ol{ list-style:none; padding:0; margin:0 }
+  nav.toc li{ margin:2px 0 }
+  nav.toc li li{ padding-left:14px; font-size:13px }
+  nav.toc a{ color:var(--text); text-decoration:none; display:block; padding:3px 8px; border-radius:6px }
+  nav.toc a:hover{ background:var(--panel) }
+  main{ padding:36px 48px 80px; min-width:0 }
+  header.hero h1{ font-size:34px; line-height:1.2; margin:0 0 6px }
+  header.hero p.lead{ font-size:18px; color:var(--muted); margin:0 0 18px; max-width:62ch }
+  .pills span{ display:inline-block; border:1px solid var(--line); border-radius:20px; padding:2px 10px; font-size:13px; color:var(--muted); margin:0 6px 6px 0 }
+  h2{ font-size:24px; margin:48px 0 10px; padding-top:12px; border-top:1px solid var(--line) }
+  h3{ font-size:18px; margin:28px 0 6px }
+  p, li{ max-width:78ch }
+  figure{ margin:18px 0 26px }
+  figure img{ display:block; width:100%; height:auto; border:1px solid var(--line); border-radius:8px; box-shadow:0 2px 14px rgba(0,0,0,.12) }
+  figcaption{ color:var(--muted); font-size:14px; margin-top:8px }
+  table{ border-collapse:collapse; width:100%; margin:12px 0 20px; font-size:14.5px; display:block; overflow-x:auto }
+  th, td{ text-align:left; vertical-align:top; padding:7px 10px; border-bottom:1px solid var(--line) }
+  th{ background:var(--panel); font-weight:600; white-space:nowrap }
+  .sev{ font-weight:700; white-space:nowrap }
+  .sev.c{ color:var(--crit) } .sev.h{ color:var(--high) } .sev.m{ color:var(--med) } .sev.l{ color:var(--low) }
+  .callout{ border-left:4px solid var(--accent); background:var(--note); border-radius:6px; padding:10px 14px; margin:14px 0 }
+  .callout.warn{ border-left-color:var(--med); background:var(--warn) }
+  .steps{ counter-reset:s; list-style:none; padding:0 }
+  .steps > li{ counter-increment:s; position:relative; padding-left:38px; margin:10px 0 }
+  .steps > li::before{ content:counter(s); position:absolute; left:0; top:1px; width:26px; height:26px; border-radius:50%; background:var(--accent); color:#fff; font-size:14px; font-weight:700; display:flex; align-items:center; justify-content:center }
+  .muted{ color:var(--muted) }
+  footer{ margin-top:56px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:14px }
+  @media (max-width: 900px){
+    .layout{ display:block }
+    nav.toc{ position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); padding:16px }
+    main{ padding:20px 16px 60px }
+    header.hero h1{ font-size:28px }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc" aria-label="Contents">
+  <div class="brand">Login Activity Triage</div>
+  <div class="ver">Manual &middot; version 0.2.1</div>
+  <ol>
+    <li><a href="#overview">What it does</a></li>
+    <li><a href="#install">Install &amp; requirements</a></li>
+    <li><a href="#quickstart">Quick start</a></li>
+    <li><a href="#window">The main window</a>
+      <ol>
+        <li><a href="#control-panel">Control panel</a></li>
+        <li><a href="#overview-card">Overview</a></li>
+        <li><a href="#exploring">Filters, sorting &amp; export</a></li>
+      </ol></li>
+    <li><a href="#tabs">The tabs</a>
+      <ol>
+        <li><a href="#tab-findings">Findings</a></li>
+        <li><a href="#tab-sessions">Remote sessions</a></li>
+        <li><a href="#tab-timeline">Timeline</a></li>
+        <li><a href="#tab-users">Users &amp; Source IPs</a></li>
+        <li><a href="#tab-hosts">Local &amp; Remote hosts</a></li>
+        <li><a href="#tab-import">Import log</a></li>
+      </ol></li>
+    <li><a href="#iocs">IOCs &amp; Known hosts</a></li>
+    <li><a href="#detections">Detection reference</a></li>
+    <li><a href="#sessions">How sessions are stitched</a></li>
+    <li><a href="#sources">Event sources</a></li>
+    <li><a href="#cli">Engine command line</a></li>
+    <li><a href="#outputs">Output files</a></li>
+    <li><a href="#limits">Forensic notes &amp; limits</a></li>
+    <li><a href="#troubleshooting">Troubleshooting</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero" id="overview">
+  <h1>Login Activity Triage</h1>
+  <p class="lead">Answers <em>who logged on, from where, to which host, how, and what ran remotely</em> from offline Windows event logs (EVTX) or a machine's live logs. Built for incident response and forensic triage.</p>
+  <div class="pills"><span>Read-only against evidence</span><span>RDP &middot; PsExec &middot; WinRM &middot; WMI &middot; DCOM &middot; tasks</span><span>MITRE ATT&amp;CK mapped</span><span>All times UTC</span></div>
+</header>
+
+<p>The tool has two parts:</p>
+<ul>
+  <li><strong><code>LoginActivityTriageCli.exe</code></strong> &mdash; the engine. It reads EVTX (a single file, a folder tree such as a KAPE or Velociraptor collection, or this machine's live logs), normalises authentication and remote-access events, stitches them into remote sessions, runs the detection rules and writes CSV, JSON and HTML results. It never modifies the evidence.</li>
+  <li><strong><code>LoginActivityTriage.hta</code></strong> &mdash; the front end. It runs the engine and explores its results: overview, findings, sessions, timeline, pivots, IOC highlighting and export.</li>
+</ul>
+<p>The engine can also be used on its own from a command prompt or a script (see <a href="#cli">Engine command line</a>).</p>
+
+<div class="callout">All screenshots in this manual show a <strong>fictional</strong> incident at "CONTOSO" (an internet-exposed RDP server brute-forced, followed by persistence and lateral movement). Every host name, account and address in them is invented; 203.0.113.0/24 is a documentation range.</div>
+
+<h2 id="install">Install &amp; requirements</h2>
+<ul>
+  <li>Windows 10 / 11 or Windows Server 2016+ (the HTA runs in <code>mshta.exe</code>, which ships with Windows).</li>
+  <li>The <strong>.NET 8 runtime</strong> (or newer) for the engine. The HTA shows <em>engine: will not start</em> when it is missing.</li>
+  <li>Keep <code>LoginActivityTriage.hta</code> and <code>LoginActivityTriageCli.exe</code> together in one folder (the exe may also live in a <code>bin</code> subfolder). Copy the folder to a local disk: from a network share, Windows zone policy restricts the HTA's file access.</li>
+  <li>Reading this machine's <strong>live Security log</strong> requires administrator rights; the HTA offers <em>Relaunch elevated</em>. Offline EVTX needs no elevation.</li>
+</ul>
+<p>Get both files from the repository's Releases page, or build the engine from source:</p>
+<pre><code>dotnet test LoginActivityTriage.sln
+dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
+
+<h2 id="quickstart">Quick start</h2>
+<ol class="steps">
+  <li>Double-click <code>LoginActivityTriage.hta</code>. The header shows the app and engine versions; <em>engine vX</em> in green means it is ready.</li>
+  <li>Choose what to read: <strong>directory (recursive)</strong> for a collection folder (several hosts at once is fine), <strong>file</strong> for one <code>.evtx</code>, or <strong>This machine</strong> for the live logs.</li>
+  <li>Set the <strong>target hostname</strong> (or a case label such as <code>CASE-ALL-HOSTS</code> for a multi-host collection). It names the output folder <code>_Processed\&lt;host&gt;\LoginActivityTriage</code> next to the app.</li>
+  <li>Leave <strong>after-hours zone</strong> on <code>auto</code> (each host's own UTC offset, read from its System event 6013) and optionally set an <strong>engine window</strong> of dates.</li>
+  <li>Click <strong>Process &rarr; analyze</strong>. A console window shows the engine's progress; results load automatically when it finishes.</li>
+  <li>Start with the <strong>Overview</strong> and the <strong>Findings</strong> tab, then pivot into sessions and the timeline.</li>
+</ol>
+<p>To reopen earlier results, click <strong>Load results&hellip;</strong> and pick any file in a results folder (one containing <code>summary.json</code>).</p>
+
+<h2 id="window">The main window</h2>
+<figure>
+  <img src="images/main.png" alt="The main window: header, control panel, overview statistics, charts and the start of the Findings tab">
+  <figcaption>The main window after processing a three-host collection: control panel, overview and the top of the Findings tab.</figcaption>
+</figure>
+
+<h3 id="control-panel">Control panel</h3>
+<table>
+  <tr><th>Control</th><th>Purpose</th></tr>
+  <tr><td>Event logs to process</td><td><em>directory (recursive)</em>, <em>file</em> or <em>This machine</em> (live logs). <strong>Browse&hellip;</strong> picks the folder or file.</td></tr>
+  <tr><td>Target hostname</td><td>Required. Names the output folder; guessed from Velociraptor / KAPE folder names where possible.</td></tr>
+  <tr><td>Output directory</td><td>Defaults to <code>_Processed\&lt;host&gt;\LoginActivityTriage</code> next to the app. <strong>Open folder</strong> opens it in Explorer.</td></tr>
+  <tr><td>After-hours zone &amp; hours</td><td>Business hours (default 7-19) for the after-hours rule. <code>auto</code> uses each host's own zone; you can force a Windows or IANA zone or a fixed offset.</td></tr>
+  <tr><td>Weekends = after hours</td><td>Saturday and Sunday count as outside business hours.</td></tr>
+  <tr><td>Keep machine/system-account noise</td><td>Off by default: routine logons of computer accounts, SYSTEM, service, DWM/UMFD and anonymous accounts are dropped. Remote-execution evidence and failures are never dropped.</td></tr>
+  <tr><td>Engine window (UTC)</td><td>Optional from / to dates. Events outside are not imported. This is <strong>the same date window</strong> as the from / to filter above the tables: changing either updates the other.</td></tr>
+  <tr><td>Process &rarr; analyze</td><td>Runs the engine. Results load only when the run succeeds; if it fails, the status line says so and the previous results stay untouched and unloaded.</td></tr>
+  <tr><td>Check engine &middot; Show log &middot; HTML reports &middot; Open in Timeline Explorer</td><td>Engine version check, the engine's console / run log, the self-contained HTML reports, and <code>events.csv</code> opened in Eric Zimmerman's Timeline Explorer when it is installed.</td></tr>
+  <tr><td>Help &middot; A&minus; / A+</td><td>Built-in help, and text size for the whole window (pop-ups follow it).</td></tr>
+</table>
+
+<h3 id="overview-card">Overview</h3>
+<figure>
+  <img src="images/findings.png" alt="Overview statistics, findings by rule, sessions by technique, most suspicious accounts and sources, and the Findings table">
+  <figcaption>Overview and Findings. Red rows are Critical, orange High, yellow Medium. IP addresses carry the names defined in Known hosts.</figcaption>
+</figure>
+<ul>
+  <li><strong>Statistic tiles</strong>: events, local hosts (logs collected), remote hosts (destinations they connected to), accounts, source IPs, findings by severity, and remote-exec / RDP / outbound session counts. Click a severity or session tile to jump to those rows.</li>
+  <li><strong>Findings by rule</strong> and <strong>Remote sessions by technique</strong>: click a bar to filter the matching tab.</li>
+  <li><strong>Most suspicious accounts / sources</strong>: a heuristic 0-100 score from failures, host fan-out, remote execution, remote-access tools, privilege, explicit credentials (used or used by others) and public source addresses. Click one to open its timeline. The score orders the investigation; it is not a verdict.</li>
+  <li>The line under the tiles records the input, the event time range, the after-hours zones in use and the engine version: copy it into case notes as provenance.</li>
+</ul>
+
+<h3 id="exploring">Filters, sorting &amp; export</h3>
+<ul>
+  <li><strong>Search all columns</strong>: substring match across every column of the current tab (including Known hosts names).</li>
+  <li><strong>Host</strong>: on Remote sessions the list has two groups, <em>Local hosts</em> and <em>Remote targets</em> (address, resolved name and session count); a host matches either end of a connection. A host that does not exist on the tab you switch to is cleared.</li>
+  <li><strong>Technique</strong> (sessions, timeline), <strong>remote-exec only</strong> and <strong>failures only</strong> (timeline), and the <strong>from / to</strong> date window.</li>
+  <li><strong>Sort</strong>: every column header has a &#8597; button; click it (or the header) to sort, again to reverse.</li>
+  <li><strong>Click a row</strong> for every field in the detail card, with pivots: open the session, the session's events, a <em>logon story</em> (&plusmn;30 minutes or &plusmn;2 hours of events sharing the user, IP or host), or the timeline for that user, IP or host. The card closes when you change tabs.</li>
+  <li><strong>Export view &rarr; CSV</strong> writes the full filtered set (not just the 5,000 rows drawn) to the results folder. <strong>Copy for case notes</strong> puts readable lines on the clipboard.</li>
+</ul>
+
+<h2 id="tabs">The tabs</h2>
+
+<h3 id="tab-findings">Findings</h3>
+<p>Rule hits ranked by severity, each with a MITRE ATT&amp;CK id, a count, the related event ids and a <em>Reasoning</em> field explaining why it fired and what to check. The severity buttons (All / Critical / High / Medium / Low) filter the list. See the <a href="#detections">Detection reference</a>.</p>
+
+<h3 id="tab-sessions">Remote sessions</h3>
+<figure>
+  <img src="images/sessions.png" alt="Remote sessions table with RDP, PsExec and PowerShell Remoting sessions, and the detail card of an RDP session">
+  <figcaption>Remote sessions. The detail card shows the attacker's RDP session: source, logon id, reconnects, admin rights and every command run inside it.</figcaption>
+</figure>
+<p>Each row is one stitched session: an RDP session (from authentication through reconnects to logoff), a PsExec run, a PowerShell Remoting or WinRS shell, WMI / DCOM execution, a remotely created scheduled task or service, an executable written to an admin share, or an <strong>outbound</strong> connection this host made. Columns include the user, source address and workstation, logon id and type, credentials used, the commands observed, and a <strong>Confidence</strong> (see <a href="#sessions">How sessions are stitched</a>).</p>
+<ul>
+  <li><strong>InferredUser</strong> is an <em>inference, never evidence</em>: for an outbound session whose logs name no account, the only account that logged on interactively to that host. The <em>Evidence</em> field states the basis.</li>
+  <li>Purple rows are inbound remote execution; green "&rarr;" pills mark outbound connections.</li>
+</ul>
+
+<h3 id="tab-timeline">Timeline</h3>
+<figure>
+  <img src="images/timeline.png" alt="Timeline of the intrusion night with red failed-logon rows, RDP pre-authentication connections and the successful RDP logon">
+  <figcaption>Timeline filtered to the night of the intrusion: failed network logons (red) interleaved with RDP pre-authentication connections, then the successful RDP logon.</figcaption>
+</figure>
+<p>Every normalised event in time order. By default it loads <code>timeline.csv</code>, a triage subset that leaves out routine successful network / domain-controller authentication and WinRM client errors outside a session; tick <strong>full events.csv</strong> to load everything (large sets open better in Timeline Explorer).</p>
+<ul>
+  <li>Square <strong>activity labels</strong> mark the session and power story: <code>Logon &middot; console / network / RDP / cached / unlock</code>, <code>Logon failed</code>, <code>Logoff</code>, <code>Disconnect</code>, <code>Reconnect</code>, <code>Boot</code>, <code>Shutdown</code>, <code>Restart</code> and <code>Unexpected shutdown</code>. Rounded pills are remote-access techniques.</li>
+  <li>Row colours: red = failure, purple = remote execution, a yellow left edge = privileged, a red left edge = IOC hit.</li>
+  <li>Restarts and shutdowns (User32 1074) name the account and process that requested them.</li>
+</ul>
+
+<h3 id="tab-users">Users &amp; Source IPs</h3>
+<p>Per-account and per-source-address roll-ups: first / last seen, hosts, successes, failures, inbound RDP, remote execution, remote-access tools, privileged logons, group changes and the suspicion score.</p>
+<ul>
+  <li>Accounts are <strong>domain-aware</strong>: when one name is used by accounts of different domains (the local Administrator of several hosts, two forests), the Users tab shows separate <code>DOMAIN\user</code> rows. Events that recorded no domain stay on a bare-name row rather than being guessed into one of them.</li>
+  <li><strong>UsedOthersCreds</strong> counts 4648 hand-offs in which the account used someone else's credentials; <strong>CredsUsedByOthers</strong> counts the reverse.</li>
+  <li><strong>SystemAccount</strong> rows (computer, SYSTEM, service accounts) are listed but scored 0.</li>
+</ul>
+
+<h3 id="tab-hosts">Local hosts &amp; Remote hosts</h3>
+<p><strong>Local hosts</strong> are the systems whose logs were collected: logons, failures, inbound and outbound RDP, remote execution, remote-access tools, service installs, privileged logons, log clears and the time zone read from event 6013.</p>
+<figure>
+  <img src="images/remote-hosts.png" alt="Remote hosts table listing destinations with connections, techniques, source hosts, users and credentials used">
+  <figcaption>Remote hosts: one row per destination, an address and its resolved name merged.</figcaption>
+</figure>
+<p><strong>Remote hosts</strong> are the systems the collected hosts connected to (outbound sessions and explicit-credential targets): connections by technique, which local hosts connected, the accounts and credentials used, and <em>Collected</em> when that system's own logs are in the evidence too.</p>
+
+<h3 id="tab-import">Import log</h3>
+<p>What the engine read: per-file records read, events kept, duplicates, filtered and unreadable records, and errors. A file that is not a readable event log (corrupt, truncated, not EVTX) is listed as failed with the reason; the overview line warns when any source failed.</p>
+
+<h2 id="iocs">IOCs &amp; Known hosts</h2>
+<h3>IOCs</h3>
+<p><strong>IOCs (n)&hellip;</strong> opens a list of host names, IPs, user names, service or file names, one per line. Matching is case-insensitive across every column; matching rows get a red left edge and <strong>IOC hits only</strong> filters to them. A toolkit-wide <code>IOC.txt</code> next to the app is merged in at launch.</p>
+<h3>Known hosts</h3>
+<figure>
+  <img src="images/known-hosts.png" alt="Known hosts dialog with IP to name mappings and names learned from the logs">
+  <figcaption>Known hosts: your own IP &rarr; name list, plus names the logs themselves resolved (accept with <em>add</em>).</figcaption>
+</figure>
+<p><strong>Known hosts (n)&hellip;</strong> maps IP addresses to host names. Type rows, <em>Paste list&hellip;</em> (CSV, tab-separated or hosts-file lines) or <em>Load file&hellip;</em>; <em>Learned from these logs</em> offers names the evidence resolved (a 4648 target server for an address, or the workstation name a client reported at logon &mdash; client-supplied, so treat with care).</p>
+<ul>
+  <li>Names appear as labels next to the IPs in every table, the detail card, the host filter, the overview and case notes, and they are searchable.</li>
+  <li><strong>Display only</strong>: the engine CSVs and <em>Export view &rarr; CSV</em> keep the logged values.</li>
+  <li>Saved with the results as <code>knownhosts.csv</code>, per case &mdash; the same private address is a different machine at another site.</li>
+</ul>
+
+<h2 id="detections">Detection reference</h2>
+<p>Thresholds use a 30-minute window unless stated. Severities can drop one level when the evidence for a session is weak.</p>
+<table>
+  <tr><th>Rule</th><th>Severity</th><th>Fires when</th><th>MITRE</th></tr>
+  <tr><td>Event log cleared</td><td class="sev c">Critical</td><td>System 104 or Security 1102.</td><td>T1070.001</td></tr>
+  <tr><td>New account added to privileged group</td><td class="sev c">Critical</td><td>An account created (4720) is added to an admin / remote-access group within a day. Otherwise <em>Member added to privileged group</em> (High).</td><td>T1136, T1098</td></tr>
+  <tr><td>PsExec-style remote service execution</td><td class="sev h">High</td><td>PSEXESVC / PAExec / RemCom / Impacket psexec-smbexec service, pipe or binary pattern on this host.</td><td>T1569.002, T1021.002</td></tr>
+  <tr><td>Service created remotely</td><td class="sev h">High</td><td>A service installed from a network logon or right after remote SCM / admin-share access.</td><td>T1543.003</td></tr>
+  <tr><td>Remote WMI / DCOM execution</td><td class="sev h">High</td><td>A shell spawned by WmiPrvSE or a DCOM object; Impacket wmiexec / dcomexec output files.</td><td>T1047, T1021.003</td></tr>
+  <tr><td>Scheduled task created remotely</td><td class="sev h">High</td><td>A task registered from a network logon (or Impacket atexec).</td><td>T1053.005</td></tr>
+  <tr><td>Write access to executable on admin share</td><td class="sev h">High</td><td>A 5145 access check granted WriteData / AppendData to an executable or script on ADMIN$ / C$ (read-only access does not count; denied access is context only).</td><td>T1021.002, T1570</td></tr>
+  <tr><td>Remote access software installed / executed</td><td class="sev h">High / Medium</td><td>AnyDesk, TeamViewer, Splashtop, ScreenConnect, Atera, RustDesk and other RMM tools; High from a user-writable path or during a remote session.</td><td>T1219</td></tr>
+  <tr><td>Service with command-line ImagePath</td><td class="sev h">High</td><td>A service whose image is a shell, PowerShell or script host.</td><td>T1543.003</td></tr>
+  <tr><td>Password spray</td><td class="sev h">High</td><td>One source fails for 8+ different accounts.</td><td>T1110.003</td></tr>
+  <tr><td>Failed logons followed by success</td><td class="sev h">Medium / High</td><td>3+ failures then success for the same account (domain-aware) from one source; High from 10.</td><td>T1110</td></tr>
+  <tr><td>RDP logon from external address</td><td class="sev h">High</td><td>RDP logon from a public (non-RFC1918) address.</td><td>T1133, T1021.001</td></tr>
+  <tr><td>RDP connection flood (pre-auth)</td><td class="sev h">High / Medium</td><td>30+ RDP TCP connections (RdpCoreTS 131) from one address; High when public.</td><td>T1110, T1133</td></tr>
+  <tr><td>Possible Kerberoasting</td><td class="sev h">High</td><td>RC4 service tickets for 3+ user service accounts within 10 minutes.</td><td>T1558.003</td></tr>
+  <tr><td>PowerShell Remoting session / WinRS remote shell</td><td class="sev m">Medium</td><td>A WinRM shell was opened on this host.</td><td>T1021.006</td></tr>
+  <tr><td>Alternate credentials used against a remote host</td><td class="sev m">Medium</td><td>4648: an account used another account's credentials for a remote server. Locally (runas) it is Low.</td><td>T1078</td></tr>
+  <tr><td>NewCredentials logon</td><td class="sev m">Medium</td><td>Logon type 9 via seclogo (runas /netonly, pass-the-hash tooling).</td><td>T1550.002</td></tr>
+  <tr><td>Local account used for remote logon</td><td class="sev m">Medium</td><td>A local SAM account logged on over the network with NTLM.</td><td>T1078.003, T1550.002</td></tr>
+  <tr><td>Authentication failure burst</td><td class="sev m">Medium</td><td>20+ failures from one source.</td><td>T1110.001</td></tr>
+  <tr><td>Source IP / User logging on to many hosts</td><td class="sev m">Medium</td><td>One source or account logs on to 3+ hosts.</td><td>T1021, T1078</td></tr>
+  <tr><td>Service tickets for many hosts (DC view)</td><td class="sev m">Medium</td><td>One client requests tickets for 15+ computer accounts.</td><td>T1021, T1018</td></tr>
+  <tr><td>Outbound PsExec / WMI / task / service control</td><td class="sev m">Medium</td><td>This host launched remote execution against other systems.</td><td>T1569.002, T1047, T1053.005</td></tr>
+  <tr><td>Outbound RDP / PowerShell Remoting from this host</td><td class="sev l">Low</td><td>Grouped per destination with attempt counts, the accounts and credentials used.</td><td>T1021.001, T1021.006</td></tr>
+  <tr><td>Failed console logons followed by success</td><td class="sev l">Low / Medium</td><td>3+ bad passwords at the keyboard (types 2 / 7 / 11) then success; notes cached credentials and remote-access software on the host. Medium from 10.</td><td>T1110</td></tr>
+  <tr><td>After-hours interactive / RDP logon</td><td class="sev l">Low</td><td>Interactive or RDP logon outside business hours in the host's zone; names the weekday and why.</td><td>T1078</td></tr>
+  <tr><td>Privileged remote logon</td><td class="sev l">Low</td><td>A network / RDP logon that received special privileges (4672).</td><td>T1078.002</td></tr>
+  <tr><td>Account locked out</td><td class="sev l">Low / Medium</td><td>4740, with the caller computer; Medium from 3 lockouts.</td><td>T1110</td></tr>
+</table>
+
+<h2 id="sessions">How sessions are stitched</h2>
+<ul>
+  <li>Events are joined per host by <strong>logon session</strong> first (the 4624 logon id and its linked id), then by time. Two users' simultaneous sessions never merge; events without a logon id join only the single session that overlaps them in time with the same user.</li>
+  <li>Logon ids are unique only within one boot, so every logon-id correlation stops at the next <strong>boot</strong> (System 6005, Security 4608). A logged-off RDP session accepts no later processes.</li>
+  <li><strong>RDP reconnects</strong> stay in their session: a reconnect authenticates with a short-lived logon that is logged off minutes later, while the session runs on under its original logon until the real logoff (4647 / LSM 23).</li>
+  <li><strong>Outbound credential hand-offs</strong> (4648) attach to a connection only when the technique and destination fit. RDP clients log the address while CredSSP's 4648 names the server: that name-for-address pairing is <em>Medium</em> confidence on one connection, <em>High</em> when the same pairing recurs on two or more connections, and withdrawn if the address or name is ever paired with something else.</li>
+  <li><strong>Confidence</strong>: High = a direct artifact plus a linked logon (or a destination-matched hand-off); Medium = a direct artifact without the logon, or an inferred pairing; Low = inferred only.</li>
+</ul>
+
+<h2 id="sources">Event sources</h2>
+<table>
+  <tr><th>Log</th><th>Event ids</th></tr>
+  <tr><td>Security</td><td>4624, 4625, 4634, 4647, 4648, 4672, 4688, 4697, 4698 / 4699 / 4702, 4720-4726, 4728 / 4732 / 4756, 4740, 4768 / 4769 / 4771 / 4776, 4778 / 4779, 5140 / 5145, 1102, 1100, 4608 / 4609</td></tr>
+  <tr><td>System</td><td>7045, 7036, 7040, 104, 6013 (time zone), 6005 / 6006 / 6008 (boot, shutdown, unexpected shutdown), 1074 (restart / shutdown initiator), Kernel-Power 41</td></tr>
+  <tr><td>TerminalServices</td><td>LocalSessionManager 21-25, 39, 40, 41; RemoteConnectionManager 1149; RdpCoreTS 131, 140; RDPClient 1024, 1102</td></tr>
+  <tr><td>WinRM</td><td>6, 91, 142, 161, 169</td></tr>
+  <tr><td>PowerShell</td><td>Windows PowerShell 400 / 403; PowerShell/Operational 4103, 32850</td></tr>
+  <tr><td>Sysmon</td><td>1, 17, 18</td></tr>
+</table>
+<p>Process creation (4688 / Sysmon 1) is kept only when it matches a remote-execution pattern or ran inside a remote logon session.</p>
+
+<h2 id="cli">Engine command line</h2>
+<pre><code>LoginActivityTriageCli -d &lt;folder&gt;     -o &lt;outDir&gt; [options]   recurse a folder of .evtx (KAPE / Velociraptor trees)
+LoginActivityTriageCli -f &lt;file.evtx&gt;  -o &lt;outDir&gt; [options]   one EVTX file
+LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machine's live logs (run elevated)
+
+  --tz &lt;id&gt;        after-hours zone: auto (default, per host from event 6013), a Windows or IANA id,
+                   a fixed offset such as UTC+10:00, local or utc
+  --hours 7-19     business hours        --no-weekend     weekends are not after hours
+  --keep-noise     keep machine / system-account logon noise
+  --from &lt;utc&gt;     --to &lt;utc&gt;           ISO-8601 import window
+  --no-html        skip the HTML reports  -q              no per-file progress   -v   version</code></pre>
+<table>
+  <tr><th>Exit code</th><th>Meaning</th></tr>
+  <tr><td>0</td><td>Success; results published.</td></tr>
+  <tr><td>1</td><td>Usage error.</td></tr>
+  <tr><td>2</td><td>No <code>.evtx</code> files found at the input.</td></tr>
+  <tr><td>3</td><td>Fatal error (including a results file held open by another program).</td></tr>
+  <tr><td>4</td><td>None of the inputs could be read (not EVTX, corrupt, access denied).</td></tr>
+</table>
+<p>Results are written to a staging folder and published only when the run succeeds, <code>summary.json</code> last. After any failure the output folder still holds the previous run's files; <code>run.log</code> always describes the latest attempt.</p>
+<p>The HTA also accepts a command line: <code>mshta LoginActivityTriage.hta "&lt;evtxDir | file.evtx | live | resultsDir&gt;" ["&lt;outDir&gt;"] [/auto] [/tz:&lt;id&gt;] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]</code>. A results folder opens in the viewer; an EVTX source is prefilled and, with <code>/auto</code>, processed. <code>/from</code> <code>/to</code> set the date window.</p>
+
+<h2 id="outputs">Output files</h2>
+<table>
+  <tr><th>File</th><th>Content</th></tr>
+  <tr><td><code>events.csv</code></td><td>Every kept event: time, host, log, event id and type, activity, technique, session ref, result, accounts (target and subject), logon ids, source address and port, workstation, logon type, authentication package, process and command line, service, task, share, group, ticket and failure details, source file.</td></tr>
+  <tr><td><code>timeline.csv</code></td><td>The triage subset the HTA loads by default.</td></tr>
+  <tr><td><code>sessions.csv</code></td><td>Stitched remote sessions with evidence and confidence.</td></tr>
+  <tr><td><code>findings.csv</code></td><td>Rule hits with severity, MITRE ids, description and reasoning.</td></tr>
+  <tr><td><code>users.csv</code> <code>sourceips.csv</code> <code>hosts.csv</code> <code>remotehosts.csv</code></td><td>Pivots with heuristic scores.</td></tr>
+  <tr><td><code>files.csv</code> <code>summary.json</code> <code>run.log</code></td><td>What was read, run settings and provenance, and the engine log.</td></tr>
+  <tr><td><code>report-findings.html</code> <code>report-sessions.html</code></td><td>Self-contained reports for attaching to case notes.</td></tr>
+  <tr><td><code>runinfo.json</code> <code>knownhosts.csv</code> exports</td><td>Written by the HTA: run provenance (read by the DFIR Artifact Finder), your Known hosts list, and <em>Export view</em> files.</td></tr>
+</table>
+<p>CSV files are UTF-8 with BOM (Excel and Timeline Explorer detect them), RFC-4180 quoted, timestamps ISO-8601 UTC with a trailing <code>Z</code>. Values a spreadsheet would execute as a formula are prefixed with an apostrophe; the HTA hides it.</p>
+
+<h2 id="limits">Forensic notes &amp; limits</h2>
+<ul>
+  <li><strong>All times are UTC.</strong> Only the after-hours rule uses local time, per host.</li>
+  <li><strong>Absence of evidence is not evidence of absence.</strong> Detection depends on what was audited and collected: without the Security log there are no logons, 4697 or share access; without process auditing (4688 with command lines) or Sysmon there are no command lines.</li>
+  <li>A 5145 records an <em>access check</em>, not a completed file copy. Confirm a dropped tool on the target (MFT, USN journal, Amcache).</li>
+  <li><em>InferredUser</em>, name-for-address pairings and Known hosts names are analyst aids, clearly marked; quote the underlying events in reports.</li>
+  <li>Workstation names in failed logons are supplied by the client and can be forged.</li>
+  <li>Suspicion scores rank where to look first; they are heuristics, not conclusions.</li>
+  <li>The engine opens evidence read-only and writes only to the output folder.</li>
+</ul>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+<table>
+  <tr><th>Symptom</th><th>What to do</th></tr>
+  <tr><td><em>engine: not found</em></td><td>Put <code>LoginActivityTriageCli.exe</code> next to the HTA or in <code>.\bin</code>, or use <strong>Download engine</strong> (latest GitHub release).</td></tr>
+  <tr><td><em>engine: will not start</em></td><td>Install the .NET 8 (or newer) runtime; the log shows the error.</td></tr>
+  <tr><td>"None of the input logs could be read"</td><td>The files are not EVTX, are corrupt, or access was denied; see the Import log and <code>run.log</code>.</td></tr>
+  <tr><td>"&hellip;is open in another program"</td><td>Close the results CSV in Timeline Explorer or Excel and process again; the previous results were left intact.</td></tr>
+  <tr><td>Live run misses logons</td><td>The Security log needs elevation: use <strong>Relaunch elevated</strong>.</td></tr>
+  <tr><td>Odd characters / file errors from a network share</td><td>Copy the app folder to a local disk; zone policy restricts the HTA's file access on shares.</td></tr>
+  <tr><td>The timeline is slow</td><td>Narrow the date window, or open <code>events.csv</code> in Timeline Explorer.</td></tr>
+</table>
+
+<footer>
+  Login Activity Triage 0.2.1 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
+  <a href="https://github.com/bpmorris22/LoginActivityTriage">github.com/bpmorris22/LoginActivityTriage</a> &middot;
+  see <code>CHANGELOG.md</code> for what changed in each version.
+</footer>
+</main>
+</div>
+</body>
+</html>

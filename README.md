@@ -1,208 +1,155 @@
-# Login Activity Triage GUI
+# Login Activity Triage
 
-A focused, investigator-first Windows desktop tool for **rapid DFIR triage of Windows
-authentication activity** from offline EVTX files. It is *not* a generic event viewer —
-it normalises logon-relevant events into a single timeline and helps answer:
+Investigator-first DFIR tooling for **Windows authentication and remote-access activity** from
+EVTX: who logged on, from where, to which host, how — and what ran remotely. Offline, read-only
+against the evidence, no telemetry. For forensic / defensive use.
 
-> Who logged in? From where? To which host? Using what logon type? Was it privileged?
-> Was it RDP / interactive / network / service? What happened before and after?
+Three front ends share one parsing and detection core:
 
-Offline-first. No cloud, no telemetry, no internet requirement.
-
----
-
-## Status: MVP
-
-This repository implements the **MVP milestone** end-to-end, with several
-post-MVP capabilities already in place. See [Feature status](#feature-status).
-
-The MVP acceptance criteria are met:
-
-- Select a folder of EVTX files and import `Security.evtx` recursively.
-- Extract and normalise **4624, 4625, 4648, 4672** (plus RDP/TS events as a bonus).
-- Display a useful, sortable, filterable **Logon Timeline**.
-- Filter by user, source IP, host, Event ID, logon type and time range.
-- Right-click any row → **Show Logon Story** (±15 / ±30 / ±60 min).
-- Export the current view to **CSV** (and HTML).
-- Missing fields and malformed XML are handled without crashing.
-
----
-
-## Technology
-
-| Area | Choice |
+| Front end | Use it for |
 |---|---|
-| Language / runtime | C# / .NET 8 |
-| UI | WPF (MVVM) |
-| EVTX parsing | `System.Diagnostics.Eventing.Reader` |
-| Case storage | SQLite (`Microsoft.Data.Sqlite`) |
-| Export | Native CSV + self-contained HTML |
-| Tests | xUnit |
+| **`LoginActivityTriage.hta`** | The day-to-day triage app, in the same family as the Hayabusa / PECmd wrappers. Drives the engine, explores its results. |
+| **`LoginActivityTriageCli.exe`** | The engine. Headless EVTX → CSV + JSON. Scriptable; driven by the HTA. |
+| `LoginActivityTriage.exe` (WPF) | Case-database workflow (SQLite `.latdb`, bookmarks / IOCs persisted per case). |
+
+**Manual:** [`docs/manual.html`](docs/manual.html) — download or clone the repository and open it in a
+browser (GitHub shows HTML files as source). Screenshots there and below show a fictional
+incident; every name and address is invented.
+
+![Overview and findings of a fictional three-host intrusion](docs/images/findings.png)
+
+![Remote sessions with the detail card of an RDP session](docs/images/sessions.png)
 
 ---
 
-## Solution layout
+## What it finds
 
-```
-LoginActivityTriage/
-  LoginActivityTriage.sln
-  src/
-    LoginActivityTriage.Core/        Models, enums, logon-type & event catalogs (no deps)
-    LoginActivityTriage.Parsing/     EVTX reader + event normalisers (testable, XML-driven)
-    LoginActivityTriage.Storage/     SQLite schema + case repository
-    LoginActivityTriage.Analytics/   Rule-based suspicious-sequence detection
-    LoginActivityTriage.Export/      CSV + HTML exporters
-    LoginActivityTriage.App/         WPF MVVM application (entry point)
-  tests/
-    LoginActivityTriage.Tests/       Unit tests with sample event XML
-```
+**Remote sessions**, stitched per host from several logs and joined on the logon session id
+(or the nearest network logon when the event has none):
 
-Parsing and UI are kept strictly separate: the normaliser operates on an event's
-XML string (`EventXmlData` + `*Normalizer`), so all normalisation logic is unit-tested
-without touching the Windows EVTX APIs.
+| Technique | Evidence used |
+|---|---|
+| **RDP** | RCM 1149 (NLA auth), 4624 type 10/12, LSM 21/22/24/25/23/39/40, 4778/4779, 4634/4647 by logon id, RdpCoreTS 131/140 (pre-auth / bad creds). Reconnects from a different IP are kept. |
+| **PsExec and clones** | 7045 / 4697 service installs (`PSEXESVC`, PAExec, RemCom, CSExec, winexe, Impacket psexec random names, smbexec `%COMSPEC% ... __output`, service binaries on `\\host\ADMIN$`), 7036 for known names, 5145 pipes on `IPC$` (`PSEXESVC-*-stdin`, `RemCom_communicaton`, `svcctl`), 5145 binary writes to `ADMIN$`, 4688 / Sysmon 1 children of `PSEXESVC.exe`. |
+| **PowerShell Remoting / WinRS** | WinRM 91 (shell + resource URI) and 169 (user + auth mechanism), Windows PowerShell 400/403 with `HostName=ServerRemoteHost`, PowerShell/Operational 4103 in a remote host and 32850, 4688 `wsmprovhost.exe` / `winrshost.exe`, source IP from the matching 4624 type 3. |
+| **WMI / DCOM** | Shells spawned by `WmiPrvSE.exe` or `mmc.exe`, Impacket `\\127.0.0.1\ADMIN$\__<n>` output redirection. |
+| **Remote scheduled tasks** | 4698 / 4702 created from a network logon, Impacket atexec command pattern, `atsvc` pipe. |
+| **Remote service creation** | Any 7045 / 4697 tied to a network logon or preceded by remote SCM / admin-share access. |
+| **Admin-share drops** | Executables / scripts written to `ADMIN$` / `C$` not explained by the above. |
+| **Outbound (this host as source)** | `psexec.exe`, `mstsc /v`, WinRM 6 (target from the connection string), RDPClient 1024/1102, 4648 with an `HTTP/` or `TERMSRV/` SPN, `wmic /node:`, `schtasks /s`, `sc \\host`, `Invoke-Command -ComputerName`. Each RDP attempt is its own session; the 4648 credential hand-off that follows supplies the user, the credentials used and the target name. Hyper-V VMConnect sessions are recognised and not flagged. |
+| **Remote access / RMM software** | Service installs and process starts of Splashtop (incl. SOS), AnyDesk, TeamViewer, ScreenConnect, Atera, RustDesk, NetSupport, LogMeIn, GoTo, Kaseya, N-able, Zoho Assist, MeshCentral, VNC, Radmin, SimpleHelp, BeyondTrust and others. High when run from a temp / user-writable folder or during an inbound remote session. |
+
+**Findings** (each with severity, MITRE ATT&CK ids, count and reasoning): every inbound
+remote-exec session; service with a command-line ImagePath; event log cleared (1102 / 104);
+failed logons followed by success (per IP + user); password spray; failure bursts; RDP pre-auth
+connection floods; RDP from a public address; one IP / one user logging on to many hosts;
+local-account network logon over NTLM; NewCredentials (type 9 / seclogo — runas /netonly or
+pass-the-hash); alternate credentials (4648) against remote hosts; members — especially new
+accounts — added to privileged groups; Kerberoasting (bulk RC4 service tickets); DC-side ticket
+fan-out; lockouts with caller computer; remote access software; after-hours interactive / RDP logons in each
+host's own time zone (System event 6013); privileged remote logons.
+
+Process events (4688 / Sysmon 1) are kept only when they match a remote-execution pattern or
+ran inside a remote logon session — "what did they run" without importing every process.
 
 ---
 
-## Build & run
+## Quick start (HTA)
 
-### Prerequisites
+1. Put `LoginActivityTriage.hta` and `LoginActivityTriageCli.exe` in one folder (the exe may
+   also live in `.\bin`). The engine needs the .NET 8 (or newer) runtime.
+2. Double-click the HTA. Pick an EVTX folder (KAPE / Velociraptor collection trees and multi-host
+   folders are fine), a single `.evtx`, or **This machine** (relaunch elevated to read Security).
+3. Set the **target hostname** (or a case label for multi-host input). Leave the after-hours zone on
+   **auto** (each host's own zone) unless you need to force one, then **Process → analyze**. Output goes to
+   `_Processed\<host>\LoginActivityTriage\` next to the app, with a `runinfo.json` entry for the
+   DFIR Artifact Finder.
+4. Explore: Findings, Remote sessions, Timeline, Users, Source IPs, Local hosts, Remote hosts,
+   Import log. Click a row for every field and pivots (session events, ±30-minute logon story,
+   timeline for the user / IP / host). **IOCs…** (plus the toolkit `IOC.txt`), **Known hosts…**
+   (IP → host-name labels shown next to every IP, saved with the results as `knownhosts.csv`;
+   display only), export view to CSV, copy for case notes, open `events.csv` in Timeline Explorer.
+   The date window is one setting: the control panel's engine window and the filter above the
+   tables always hold the same dates (`/from` `/to` set both).
 
-- Windows 10 / 11
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+```
+mshta "LoginActivityTriage.hta" "<evtxDir | file.evtx | live | resultsDir>" ["<outDir>"] [/auto] [/tz:<id>] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]
+```
 
-Verify the SDK:
+## Engine (CLI)
+
+```
+LoginActivityTriageCli -d <folder> -o <outDir> [options]     # recurse a folder of .evtx
+LoginActivityTriageCli -f <file.evtx> -o <outDir> [options]  # one file
+LoginActivityTriageCli --live -o <outDir> [options]          # this machine (run elevated)
+
+  --tz <id>        after-hours zone: auto (default: each host's offset from System 6013, UTC if none),
+                   or force one: Windows id ("Taipei Standard Time"), IANA id, UTC+08:00, local or utc
+  --hours 7-19     business hours in that zone        --no-weekend   weekends are not after hours
+  --keep-noise     keep machine / SYSTEM / service logon, logoff and ticket events
+  --from / --to    ISO-8601 UTC window                 --no-html      skip HTML reports
+```
+
+Outputs (UTF-8 CSV, ISO-8601 UTC `…Z` timestamps, spreadsheet-formula values neutralised):
+
+| File | Content |
+|---|---|
+| `events.csv` | every kept event, 52 columns incl. logon ids, subject / target accounts, activity (logon / logoff / boot / shutdown / restart...), technique, session ref, command line, service, share, source file |
+| `timeline.csv` | the triage subset the HTA loads: everything except routine successful network / DC authentication and WinRM client errors outside a session |
+| `sessions.csv` | stitched remote sessions with user, source, logon id, commands, evidence and confidence; `InferredUser` (an inference, never evidence) for outbound sessions whose logs name no account |
+| `findings.csv` | rule hits |
+| `users.csv` `sourceips.csv` `hosts.csv` | pivots with a heuristic suspicion score (users: `UsedOthersCreds` / `CredsUsedByOthers` for both sides of a 4648 hand-off; `RemoteAccessTool` separate from `RemoteExec`) |
+| `remotehosts.csv` | one row per destination the collected hosts connected to (outbound sessions, 4648 targets), address and resolved name merged |
+| `files.csv`, `run.log`, `summary.json` | what was read, duplicates / noise / unreadable counts, errors |
+| `report-findings.html`, `report-sessions.html` | self-contained reports |
+
+Exit codes: 0 ok, 1 usage, 2 no EVTX found, 3 fatal, 4 no input could be read.
+
+Results are staged and published only when a run succeeds (`summary.json` last): after any failure
+the output folder still holds the previous run's files, and `run.log` describes the failed attempt.
+Account identities are domain-aware: the Users pivot shows `DOMAIN\user` rows when one name is used by
+accounts of different domains (e.g. local Administrator on several hosts).
+
+Performance reference: a 1,413-file Velociraptor collection of 12 hosts (domain controller,
+application and backup servers) — 245k events kept — processes in about 50 seconds.
+
+## Build
 
 ```powershell
-dotnet --list-sdks   # expect an 8.0.x entry
+dotnet test LoginActivityTriage.sln
+dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin     # engine next to the HTA
+dotnet run --project src\LoginActivityTriage.App -c Release           # WPF app
 ```
 
-### Build everything
+The HTA does not build the engine; publish it with the command above (or use a release build).
+Tagged releases (`v*`) attach `LoginActivityTriage.hta`, `LoginActivityTriageCli.exe` and a
+bundle zip; the HTA's self-update and **Download engine** read those assets.
 
-```powershell
-cd LoginActivityTriage
-dotnet build LoginActivityTriage.sln -c Release
-```
-
-### Run the app
-
-```powershell
-dotnet run --project src\LoginActivityTriage.App -c Release
-```
-
-Or launch the built executable directly:
+## Layout
 
 ```
-src\LoginActivityTriage.App\bin\Release\net8.0-windows\LoginActivityTriage.exe
+src/LoginActivityTriage.Core/       models, catalogs, account / host / IP keys, remote-exec pattern library
+src/LoginActivityTriage.Parsing/    EVTX reader (live or file) + provider-routed normalisers
+src/LoginActivityTriage.Analytics/  session builder, rules, pivots, noise / process filters
+src/LoginActivityTriage.Export/     CSV (injection-safe) + HTML
+src/LoginActivityTriage.Storage/    SQLite case store (schema migrates older .latdb files)
+src/LoginActivityTriage.Cli/        the engine
+src/LoginActivityTriage.App/        WPF front end
+hta/LoginActivityTriage.hta         HTA front end
+tests/LoginActivityTriage.Tests/    normaliser, detection, storage, export and WPF-load tests
 ```
 
-### Run the tests
+## Limits
 
-```powershell
-dotnet test
-```
+- Detection depends on what was audited and collected: without the Security log there are no
+  logons, 4697 installs or share access; without 4688 / Sysmon there are no command lines.
+  Absence of evidence is not evidence of absence.
+- Event IDs are routed by provider and channel, never by ID alone (System's Kernel-Boot 25 is
+  not an RDP reconnect).
+- Console-session addresses are localised by Windows ("LOCAL", "本機", ...); only real IP
+  addresses count as RDP sources.
+- Timestamps are UTC everywhere. Only the after-hours rule uses a zone: by default each host's
+  own UTC offset from System event 6013 (a fixed offset, so a daylight-saving change inside the
+  evidence window can shift it by an hour).
 
----
-
-## Usage
-
-1. **Create a case** — *New Case* prompts for a `.latdb` file (the SQLite case
-   database). Alternatively just hit *Import EVTX Folder…* and a quick-triage
-   case is created automatically under `%TEMP%`.
-2. **Import** — choose a folder; every `*.evtx` beneath it is discovered
-   recursively. Progress is shown in the status bar. Hostnames are inferred from
-   the event XML (`Computer`) or, failing that, the containing folder name
-   (common in Velociraptor/KAPE-style collections, e.g. `…\HOST01\Security.evtx`).
-   Parse errors and skipped records are listed under the **Import Log** tab.
-3. **Triage** on the tabs:
-   - **Dashboard** — summary cards and top-N lists (users, source IPs, hosts,
-     privileged users, RDP source IPs).
-   - **Logon Timeline** — the normalised grid with full filters and one-click
-     *Quick* filters (RDP, Failures, Privileged, Explicit creds, NTLM, Kerberos
-     failures, Service installed, Account created, Logon Type 3 / 10, exclude
-     machine accounts).
-   - **Suspicious Sequences** — rule-based findings with severity and reasoning.
-   - **Import Log** — errors and skipped files.
-4. **Logon Story** — right-click any timeline row → *Show Logon Story*. A window
-   opens showing every event that shares the same user, source IP **or** host
-   within ±N minutes of the selected event (window size is set in the toolbar).
-5. **Export** — *Export CSV* / *Export HTML* write the **current filtered view**.
-
-### Logon type reference
-
-| Type | Meaning | | Type | Meaning |
-|---|---|---|---|---|
-| 2 | Interactive | | 8 | NetworkCleartext |
-| 3 | Network | | 9 | NewCredentials |
-| 4 | Batch | | 10 | RemoteInteractive / RDP |
-| 5 | Service | | 11 | CachedInteractive |
-| 7 | Unlock | | | |
-
----
-
-## Normalised fields
-
-Each event is flattened to a single row. Depending on the Event ID the following
-are populated where present: Timestamp, Hostname, Log source, Event ID, Provider,
-Record ID, Channel, Event type, User, Domain, SID, Source IP, Source port,
-Workstation, Logon type (+ description), Authentication package, Logon process,
-Elevated token, Impersonation level, Process name/ID, Target server, Service name,
-Group name, Status, SubStatus, Failure reason, and the original **Raw XML**.
-
-`4625` failure reasons are decoded from the NTSTATUS `SubStatus` (falling back to
-`Status`), e.g. `0xC000006A → Bad password`, `0xC0000234 → Account locked out`.
-
----
-
-## SQLite schema
-
-A case database contains: `Cases`, `ImportedFiles`, `NormalizedEvents`,
-`RawEvents` (original XML, 1:1 with normalised rows), `Findings`, `Bookmarks`,
-`Notes`, and `Users` / `Hosts` / `SourceIPs` aggregate tables. Timestamps are
-stored both as ISO-8601 (`TimestampUtc`) and epoch-milliseconds (`UnixMs`, indexed
-for fast range queries).
-
----
-
-## Suspicious-sequence rules (current)
-
-1. Failed logons followed by a successful logon from the same source IP.
-2. One source IP authenticating to many hosts within 30 minutes (lateral movement).
-3. One user authenticating to many hosts within 30 minutes.
-4. Successful logon outside business hours (07:00–19:00).
-
-Each finding carries Severity, Rule name, Description, Timestamp, User, Source IP,
-Host, Related Event IDs and Reasoning.
-
----
-
-## Feature status
-
-**Implemented (MVP + extras):** case creation, recursive EVTX import with progress
-and error capture, Security normalisation (4624/4625/4648/4672), Terminal-Services
-normalisation (1149/21/22/24/25/39/40), SQLite case cache with raw XML, Dashboard,
-Logon Timeline with full filters + quick filters, **RDP Activity**, **Failed Logons**
-and **Admin Usage** tabs, **Source IP / User / Host pivot** tabs (with a heuristic
-suspicion score), Suspicious Sequences, Logon Story, CSV/HTML export, virtualised
-grids, unit tests.
-
-**Planned (designed for, not yet built):** normalisation of the remaining Security /
-System event IDs (account & group changes 4720–4756, Kerberos/NTLM 4768–4776, service
-install 7045) and the detection rules that depend on them (service-after-network-logon,
-new-account-then-privileged-group, NTLM-from-unusual-source), plus bookmarks/notes UI
-and a full case-summary report. The architecture (additive `IEventNormalizer`s,
-additive analytics rules, a filter model shared by SQL and in-memory paths) is built
-so these extend cleanly.
-
-Note: the pivot grids include the columns derivable from the events parsed today;
-the spec's *group-changes* (User pivot) and *service-installs* (Host pivot) columns
-arrive once those event IDs are normalised.
-
----
-
-## Design principles
-
-- **Investigator workflow over feature completeness.**
-- **Never crash on bad data** — malformed XML and missing fields are tolerated at
-  every layer; per-record and per-file failures are isolated and reported.
-- **Parsing logic is separate from UI** and fully unit-testable.
-- **Offline, local, no telemetry.**
+MIT © 2026 Ben Morris

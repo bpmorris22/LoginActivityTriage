@@ -29,7 +29,7 @@
                 <TextBlock Text="{Binding PivotDescription}" Foreground="{StaticResource MutedTextBrush}" Margin="0,4,0,0" />
                 <TextBlock Foreground="{StaticResource MutedTextBrush}" Margin="0,2,0,0">
                     <Run Text="Anchor: " />
-                    <Run Text="{Binding Anchor, StringFormat=yyyy-MM-dd HH:mm:ss, Mode=OneWay}" />
+                    <Run Text="{Binding Anchor, Converter={StaticResource Utc}, Mode=OneWay}" />
                     <Run Text="   Events in window: " />
                     <Run Text="{Binding Events.Count, Mode=OneWay}" />
                 </TextBlock>
@@ -44,15 +44,17 @@
                   RowStyle="{StaticResource StoryRowStyle}" CellStyle="{StaticResource IocCellStyle}"
                   ClipboardCopyMode="IncludeHeader">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                <DataGridTextColumn Header="Timestamp (UTC)" Binding="{Binding Timestamp, Converter={StaticResource Utc}}" SortMemberPath="Timestamp" Width="150" />
                 <DataGridTextColumn Header="Host" Binding="{Binding Hostname}" Width="120" />
                 <DataGridTextColumn Header="Event ID" Binding="{Binding EventId}" Width="70" />
                 <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}" Width="170" />
+                <DataGridTextColumn Header="Technique" Binding="{Binding Technique}" Width="95" />
                 <DataGridTextColumn Header="User" Binding="{Binding TargetUserName}" Width="130" />
                 <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="120" />
                 <DataGridTextColumn Header="Logon Type" Binding="{Binding LogonTypeDescription}" Width="150" />
                 <DataGridTextColumn Header="Auth" Binding="{Binding AuthenticationPackage}" Width="100" />
                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="100" />
+                <DataGridTextColumn Header="Details" Binding="{Binding Details}" Width="260" />
                 <DataGridTextColumn Header="Failure Reason" Binding="{Binding FailureReason}" Width="*" />
             </DataGrid.Columns>
         </DataGrid>

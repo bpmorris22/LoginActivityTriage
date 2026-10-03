@@ -61,7 +61,13 @@
                             ToolTip="Choose a .latdb case file. If it already exists you'll be asked whether to open it (restoring events &amp; IOCs) or overwrite it with a new case." />
                     <Button Content="Import EVTX Folder…" Style="{StaticResource ToolButton}"
                             Command="{Binding ImportFolderCommand}" IsEnabled="{Binding IsNotBusy}"
-                            ToolTip="Recursively discover and import every .evtx file under a chosen folder, normalising logon-related events." />
+                            ToolTip="Recursively discover and import every .evtx file under a chosen folder. Records already in the case are skipped, so re-importing is safe." />
+                    <Button Content="Cancel" Style="{StaticResource ToolButton}"
+                            Command="{Binding CancelImportCommand}"
+                            ToolTip="Stop the running import. Events read so far are kept." />
+                    <CheckBox Content="Drop machine-account noise" VerticalAlignment="Center" Margin="6,0"
+                              Foreground="{StaticResource TextBrush}" IsChecked="{Binding DropNoiseOnImport}"
+                              ToolTip="While importing, skip logon / logoff / ticket events of machine ($), SYSTEM, LOCAL/NETWORK SERVICE, DWM, UMFD and anonymous accounts. Failures and remote-execution evidence are always kept." />
                     <Separator Margin="6,0" />
                     <Button Content="Export CSV" Style="{StaticResource ToolButton}"
                             Command="{Binding ExportCsvCommand}"
@@ -69,8 +75,19 @@
                     <Button Content="Export HTML" Style="{StaticResource ToolButton}"
                             Command="{Binding ExportHtmlCommand}"
                             ToolTip="Export the current (filtered) Logon Timeline rows to a styled HTML report." />
+                    <Button Content="Export Findings + Sessions" Style="{StaticResource ToolButton}"
+                            Command="{Binding ExportReportCommand}"
+                            ToolTip="Write the findings and remote sessions as HTML reports plus CSV for the case notes." />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
+                    <TextBlock Text="After-hours zone:" VerticalAlignment="Center" Margin="0,0,6,0"
+                               Foreground="{StaticResource MutedTextBrush}" />
+                    <ComboBox Width="220" Margin="0,0,12,0" ItemsSource="{Binding TimeZones}"
+                              SelectedItem="{Binding SelectedTimeZone}" DisplayMemberPath="Id"
+                              ToolTip="Fallback / forced zone for the after-hours rule - the EVIDENCE site's zone. Every timestamp shown stays UTC." />
+                    <CheckBox Content="Per-host zones (6013)" VerticalAlignment="Center" Margin="0,0,12,0"
+                              Foreground="{StaticResource TextBrush}" IsChecked="{Binding UseHostTimeZones}"
+                              ToolTip="Evaluate after-hours in each host's own UTC offset, read from its System event 6013. Hosts without 6013 use the zone on the left." />
                     <TextBlock Text="Story window:" VerticalAlignment="Center" Margin="0,0,6,0"
                                Foreground="{StaticResource MutedTextBrush}" />
                     <ComboBox Width="90" SelectedValuePath="Tag"
@@ -106,7 +123,7 @@
                                      ToolTip="Match events recorded on hosts whose name contains this text (the computer the log came from)." /></StackPanel>
                         <StackPanel Margin="4"><TextBlock Text="Source IP" Style="{StaticResource CardLabel}" />
                             <TextBox Width="130" Text="{Binding FilterSourceIp, UpdateSourceTrigger=PropertyChanged}"
-                                     ToolTip="Match events whose source / remote IP address contains this text (e.g. 10.0 or a full address)." /></StackPanel>
+                                     ToolTip="A full address matches exactly; 10.0.0.0/8 is a CIDR range; 10.0.* is a prefix; anything else is a substring." /></StackPanel>
                         <StackPanel Margin="4"><TextBlock Text="Event ID" Style="{StaticResource CardLabel}" />
                             <TextBox Width="80" Text="{Binding FilterEventId, UpdateSourceTrigger=PropertyChanged}"
                                      ToolTip="Match a specific Windows Event ID (e.g. 4624 success, 4625 failure, 4648 explicit credentials)." /></StackPanel>
@@ -116,16 +133,19 @@
                         <StackPanel Margin="4"><TextBlock Text="Auth Pkg" Style="{StaticResource CardLabel}" />
                             <TextBox Width="100" Text="{Binding FilterAuthPackage, UpdateSourceTrigger=PropertyChanged}"
                                      ToolTip="Match the authentication package, e.g. NTLM, Kerberos or Negotiate." /></StackPanel>
-                        <StackPanel Margin="4"><TextBlock Text="From (date)" Style="{StaticResource CardLabel}" />
+                        <StackPanel Margin="4"><TextBlock Text="Technique" Style="{StaticResource CardLabel}" />
+                            <TextBox Width="100" Text="{Binding FilterTechnique, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Match the remote-access technique, e.g. RDP, PsExec, PS Remoting, WMI, Scheduled task." /></StackPanel>
+                        <StackPanel Margin="4"><TextBlock Text="From (date, UTC)" Style="{StaticResource CardLabel}" />
                             <DatePicker Width="120" SelectedDate="{Binding FilterFrom}"
                                         ToolTip="Start of the date range. Events before this date are hidden." /></StackPanel>
-                        <StackPanel Margin="4"><TextBlock Text="From (time)" Style="{StaticResource CardLabel}" />
+                        <StackPanel Margin="4"><TextBlock Text="From (time, UTC)" Style="{StaticResource CardLabel}" />
                             <TextBox Width="90" Text="{Binding FilterFromTime, UpdateSourceTrigger=PropertyChanged}"
                                      ToolTip="Optional start time of day as HH:mm or HH:mm:ss (e.g. 08:30). Blank = from the start of the day." /></StackPanel>
-                        <StackPanel Margin="4"><TextBlock Text="To (date)" Style="{StaticResource CardLabel}" />
+                        <StackPanel Margin="4"><TextBlock Text="To (date, UTC)" Style="{StaticResource CardLabel}" />
                             <DatePicker Width="120" SelectedDate="{Binding FilterTo}"
                                         ToolTip="End of the date range. With a blank time the whole day is included." /></StackPanel>
-                        <StackPanel Margin="4"><TextBlock Text="To (time)" Style="{StaticResource CardLabel}" />
+                        <StackPanel Margin="4"><TextBlock Text="To (time, UTC)" Style="{StaticResource CardLabel}" />
                             <TextBox Width="90" Text="{Binding FilterToTime, UpdateSourceTrigger=PropertyChanged}"
                                      ToolTip="Optional end time of day as HH:mm or HH:mm:ss (e.g. 17:00). Blank = through the end of the day." /></StackPanel>
                     </WrapPanel>
@@ -138,6 +158,8 @@
                                   ToolTip="Show only privileged / special-privilege logons (admin-equivalent tokens)." />
                         <CheckBox Content="RDP only" Margin="4" Foreground="{StaticResource TextBrush}" IsChecked="{Binding RdpOnly}"
                                   ToolTip="Show only RDP / RemoteInteractive logon activity." />
+                        <CheckBox Content="Remote exec only" Margin="4" Foreground="{StaticResource TextBrush}" IsChecked="{Binding RemoteExecOnly}"
+                                  ToolTip="Show only evidence of remote execution: PsExec and clones, PowerShell Remoting / WinRS, WMI, DCOM, remote tasks and services, admin-share drops." />
                         <CheckBox Content="Exclude machine accounts" Margin="4" Foreground="{StaticResource TextBrush}" IsChecked="{Binding ExcludeMachineAccounts}"
                                   ToolTip="Hide computer/machine accounts (user names ending in $)." />
                         <CheckBox Content="Exclude localhost/blank src" Margin="4" Foreground="{StaticResource TextBrush}" IsChecked="{Binding ExcludeLocalBlank}"
@@ -154,7 +176,15 @@
                         <Button Content="RDP Logons" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="RDP"
                                 ToolTip="One click: show only RDP / RemoteInteractive logons (logon type 10)." />
                         <Button Content="Failures" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="Failures"
-                                ToolTip="One click: show only failed logons (event 4625)." />
+                                ToolTip="One click: show only failed authentications (4625, 4771, 4776, RDP 140, lockouts)." />
+                        <Button Content="Remote Exec" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="RemoteExec"
+                                ToolTip="One click: every event that is evidence of remote execution." />
+                        <Button Content="PsExec" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="PsExec"
+                                ToolTip="One click: PsExec and clones (PSEXESVC, PAExec, RemCom, Impacket psexec / smbexec)." />
+                        <Button Content="PS Remoting" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="PsRemoting"
+                                ToolTip="One click: WinRM / PowerShell Remoting evidence (WinRM 91/169, PowerShell ServerRemoteHost, wsmprovhost)." />
+                        <Button Content="Log Cleared" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="LogCleared"
+                                ToolTip="One click: event log clearing (1102 / 104)." />
                         <Button Content="Privileged" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="Privileged"
                                 ToolTip="One click: show only privileged logons." />
                         <Button Content="Explicit Creds" Style="{StaticResource QuickButton}" Command="{Binding QuickFilterCommand}" CommandParameter="Explicit"
@@ -230,7 +260,16 @@
                                     <TextBlock Text="Unique hosts" Style="{StaticResource CardLabel}" /></StackPanel></Border>
                             <Border Style="{StaticResource CardStyle}" Width="170">
                                 <StackPanel><TextBlock Text="{Binding SuspiciousCount}" Style="{StaticResource CardValue}" Foreground="{StaticResource FailBrush}" />
-                                    <TextBlock Text="Suspicious sequences" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                                    <TextBlock Text="Findings (all)" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding HighFindings}" Style="{StaticResource CardValue}" Foreground="{StaticResource FailBrush}" />
+                                    <TextBlock Text="High / critical findings" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding RemoteExecSessions}" Style="{StaticResource CardValue}" Foreground="{StaticResource IocAccentBrush}" />
+                                    <TextBlock Text="Remote-exec sessions" Style="{StaticResource CardLabel}" /></StackPanel></Border>
+                            <Border Style="{StaticResource CardStyle}" Width="170">
+                                <StackPanel><TextBlock Text="{Binding RdpSessions}" Style="{StaticResource CardValue}" />
+                                    <TextBlock Text="RDP sessions" Style="{StaticResource CardLabel}" /></StackPanel></Border>
                         </WrapPanel>
 
                         <WrapPanel>
@@ -289,8 +328,14 @@
 
             <!-- Logon Timeline -->
             <TabItem Header="Logon Timeline"
-                     ToolTip="Full chronological logon event timeline, driven by the filter bar above. Right-click a row for its Logon Story.">
-                <DataGrid ItemsSource="{Binding Events}" SelectedItem="{Binding SelectedEvent}"
+                     ToolTip="Full chronological timeline, driven by the filter bar above. Select a row for every field and the original XML; right-click for its Logon Story.">
+              <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="5" />
+                    <RowDefinition Height="220" />
+                </Grid.RowDefinitions>
+                <DataGrid Grid.Row="0" ItemsSource="{Binding Events}" SelectedItem="{Binding SelectedEvent}"
                               AutoGenerateColumns="False" IsReadOnly="True"
                               EnableRowVirtualization="True" EnableColumnVirtualization="True"
                               VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
@@ -307,10 +352,12 @@
                             </ContextMenu>
                         </DataGrid.ContextMenu>
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                            <DataGridTextColumn Header="Timestamp (UTC)" Binding="{Binding Timestamp, Converter={StaticResource Utc}}" SortMemberPath="Timestamp" Width="150" />
                             <DataGridTextColumn Header="Hostname" Binding="{Binding Hostname}" Width="120" />
                             <DataGridTextColumn Header="Event ID" Binding="{Binding EventId}" Width="70" />
                             <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}" Width="160" />
+                            <DataGridTextColumn Header="Technique" Binding="{Binding Technique}" Width="95" />
+                            <DataGridTextColumn Header="Session #" Binding="{Binding RemoteSessionRef}" Width="65" />
                             <DataGridTextColumn Header="User" Binding="{Binding TargetUserName}" Width="130" />
                             <DataGridTextColumn Header="Domain" Binding="{Binding TargetDomain}" Width="100" />
                             <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="120" />
@@ -318,12 +365,60 @@
                             <DataGridTextColumn Header="Logon Type" Binding="{Binding LogonType}" Width="80" />
                             <DataGridTextColumn Header="Logon Type Description" Binding="{Binding LogonTypeDescription}" Width="160" />
                             <DataGridTextColumn Header="Auth Package" Binding="{Binding AuthenticationPackage}" Width="110" />
+                            <DataGridTextColumn Header="Logon ID" Binding="{Binding LogonId}" Width="90" />
                             <DataGridTextColumn Header="Elevated" Binding="{Binding ElevatedToken, Converter={StaticResource ElevatedToText}}" Width="70" />
                             <DataGridTextColumn Header="Process" Binding="{Binding ProcessName}" Width="160" />
-                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="100" />
+                            <DataGridTextColumn Header="Details" Binding="{Binding Details}" Width="260" />
                             <DataGridTextColumn Header="Failure Reason" Binding="{Binding FailureReason}" Width="170" />
                         </DataGrid.Columns>
                     </DataGrid>
+                <GridSplitter Grid.Row="1" HorizontalAlignment="Stretch" Background="#FF3A3D44" />
+                <TextBox Grid.Row="2" Text="{Binding SelectedEventDetail, Mode=OneWay}" IsReadOnly="True"
+                         FontFamily="Consolas" FontSize="11" TextWrapping="NoWrap"
+                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                         Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}" BorderThickness="0"
+                         ToolTip="Every populated field of the selected event, then the original event XML from the case database." />
+              </Grid>
+            </TabItem>
+
+            <!-- Remote Sessions -->
+            <TabItem Header="Remote Sessions"
+                     ToolTip="Stitched remote-access sessions: RDP, PsExec and clones, PowerShell Remoting / WinRS, WMI, DCOM, remote tasks and services, admin-share drops, and outbound use from each host. Double-click or right-click for the member events.">
+                <DataGrid ItemsSource="{Binding RemoteSessions}" SelectedItem="{Binding SelectedSession}"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True"
+                          GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                          Background="{StaticResource CardBackground}" Foreground="{StaticResource TextBrush}"
+                          RowBackground="{StaticResource CardBackground}" AlternatingRowBackground="#FF33363D"
+                          RowStyle="{StaticResource PivotRowStyle}" CellStyle="{StaticResource IocCellStyle}" ClipboardCopyMode="IncludeHeader"
+                          MouseDoubleClick="SessionsGrid_MouseDoubleClick">
+                    <DataGrid.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Show session events" Command="{Binding ShowSessionEventsCommand}"
+                                      CommandParameter="{Binding PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                        </ContextMenu>
+                    </DataGrid.ContextMenu>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="#" Binding="{Binding Id}" Width="50" />
+                        <DataGridTextColumn Header="Start (UTC)" Binding="{Binding Start, Converter={StaticResource Utc}}" SortMemberPath="Start" Width="140" />
+                        <DataGridTextColumn Header="End (UTC)" Binding="{Binding End, Converter={StaticResource Utc}}" SortMemberPath="End" Width="140" />
+                        <DataGridTextColumn Header="Technique" Binding="{Binding Technique}" Width="100" />
+                        <DataGridTextColumn Header="Variant" Binding="{Binding Variant}" Width="170" />
+                        <DataGridTextColumn Header="Direction" Binding="{Binding Direction}" Width="75" />
+                        <DataGridTextColumn Header="Host" Binding="{Binding Host}" Width="140" />
+                        <DataGridTextColumn Header="Target" Binding="{Binding TargetHost}" Width="110" />
+                        <DataGridTextColumn Header="Target name" Binding="{Binding TargetHostName}" Width="140" />
+                        <DataGridTextColumn Header="Credentials used" Binding="{Binding CredentialsUsed}" Width="140" />
+                        <DataGridTextColumn Header="User" Binding="{Binding User}" Width="120" />
+                        <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="130" />
+                        <DataGridTextColumn Header="Source host" Binding="{Binding SourceHost}" Width="110" />
+                        <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence}" Width="75" />
+                        <DataGridTextColumn Header="Detail" Binding="{Binding Detail}" Width="220" />
+                        <DataGridTextColumn Header="Commands" Binding="{Binding Commands}" Width="260" />
+                        <DataGridTextColumn Header="Events" Binding="{Binding EventCount}" Width="60" />
+                        <DataGridTextColumn Header="Evidence" Binding="{Binding Evidence}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
             </TabItem>
 
             <!-- RDP Activity -->
@@ -344,7 +439,7 @@
                         </ContextMenu>
                     </DataGrid.ContextMenu>
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Timestamp (UTC)" Binding="{Binding Timestamp, Converter={StaticResource Utc}}" SortMemberPath="Timestamp" Width="150" />
                         <DataGridTextColumn Header="Host" Binding="{Binding Hostname}" Width="130" />
                         <DataGridTextColumn Header="Event ID" Binding="{Binding EventId}" Width="70" />
                         <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}" Width="190" />
@@ -375,7 +470,7 @@
                         </ContextMenu>
                     </DataGrid.ContextMenu>
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Timestamp (UTC)" Binding="{Binding Timestamp, Converter={StaticResource Utc}}" SortMemberPath="Timestamp" Width="150" />
                         <DataGridTextColumn Header="Host" Binding="{Binding Hostname}" Width="130" />
                         <DataGridTextColumn Header="Event ID" Binding="{Binding EventId}" Width="70" />
                         <DataGridTextColumn Header="User" Binding="{Binding TargetUserName}" Width="150" />
@@ -406,7 +501,7 @@
                         </ContextMenu>
                     </DataGrid.ContextMenu>
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Timestamp (UTC)" Binding="{Binding Timestamp, Converter={StaticResource Utc}}" SortMemberPath="Timestamp" Width="150" />
                         <DataGridTextColumn Header="Host" Binding="{Binding Hostname}" Width="130" />
                         <DataGridTextColumn Header="Event ID" Binding="{Binding EventId}" Width="70" />
                         <DataGridTextColumn Header="Event Type" Binding="{Binding EventType}" Width="190" />
@@ -428,16 +523,19 @@
                           RowStyle="{StaticResource PivotRowStyle}" CellStyle="{StaticResource IocCellStyle}" ClipboardCopyMode="IncludeHeader">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="150" />
-                        <DataGridTextColumn Header="First Seen" Binding="{Binding FirstSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
-                        <DataGridTextColumn Header="Last Seen" Binding="{Binding LastSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="First Seen (UTC)" Binding="{Binding FirstSeen, Converter={StaticResource Utc}}" SortMemberPath="FirstSeen" Width="150" />
+                        <DataGridTextColumn Header="Last Seen (UTC)" Binding="{Binding LastSeen, Converter={StaticResource Utc}}" SortMemberPath="LastSeen" Width="150" />
                         <DataGridTextColumn Header="Users" Binding="{Binding UniqueUsers}" Width="70" />
                         <DataGridTextColumn Header="Hosts" Binding="{Binding UniqueHosts}" Width="70" />
                         <DataGridTextColumn Header="Success" Binding="{Binding Successful}" Width="80" />
                         <DataGridTextColumn Header="Failed" Binding="{Binding Failed}" Width="70" />
-                        <DataGridTextColumn Header="RDP" Binding="{Binding Rdp}" Width="60" />
+                        <DataGridTextColumn Header="RDP in" Binding="{Binding Rdp}" Width="60" />
+                        <DataGridTextColumn Header="Remote exec" Binding="{Binding RemoteExec}" Width="85" />
                         <DataGridTextColumn Header="Explicit" Binding="{Binding Explicit}" Width="70" />
                         <DataGridTextColumn Header="Privileged" Binding="{Binding Privileged}" Width="80" />
-                        <DataGridTextColumn Header="Suspicion" Binding="{Binding SuspicionScore}" Width="*" />
+                        <DataGridTextColumn Header="Private" Binding="{Binding IsPrivateAddress, Converter={StaticResource BoolToYesNo}}" Width="60" />
+                        <DataGridTextColumn Header="Suspicion" Binding="{Binding SuspicionScore}" Width="75" />
+                        <DataGridTextColumn Header="Top users" Binding="{Binding Users}" Width="*" />
                     </DataGrid.Columns>
                 </DataGrid>
             </TabItem>
@@ -452,16 +550,21 @@
                           RowStyle="{StaticResource PivotRowStyle}" CellStyle="{StaticResource IocCellStyle}" ClipboardCopyMode="IncludeHeader">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="User" Binding="{Binding User}" Width="160" />
-                        <DataGridTextColumn Header="First Seen" Binding="{Binding FirstSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
-                        <DataGridTextColumn Header="Last Seen" Binding="{Binding LastSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
-                        <DataGridTextColumn Header="Hosts" Binding="{Binding Hosts}" Width="70" />
-                        <DataGridTextColumn Header="Source IPs" Binding="{Binding SourceIps}" Width="90" />
+                        <DataGridTextColumn Header="First Seen (UTC)" Binding="{Binding FirstSeen, Converter={StaticResource Utc}}" SortMemberPath="FirstSeen" Width="150" />
+                        <DataGridTextColumn Header="Last Seen (UTC)" Binding="{Binding LastSeen, Converter={StaticResource Utc}}" SortMemberPath="LastSeen" Width="150" />
+                        <DataGridTextColumn Header="Hosts" Binding="{Binding HostCount}" Width="70" />
+                        <DataGridTextColumn Header="Source IPs" Binding="{Binding SourceIpCount}" Width="90" />
                         <DataGridTextColumn Header="Success" Binding="{Binding Successful}" Width="80" />
                         <DataGridTextColumn Header="Failed" Binding="{Binding Failed}" Width="70" />
-                        <DataGridTextColumn Header="RDP" Binding="{Binding Rdp}" Width="60" />
-                        <DataGridTextColumn Header="Explicit" Binding="{Binding Explicit}" Width="70" />
+                        <DataGridTextColumn Header="RDP in" Binding="{Binding Rdp}" Width="60" />
+                        <DataGridTextColumn Header="Remote exec" Binding="{Binding RemoteExec}" Width="85" />
+                        <DataGridTextColumn Header="Remote access tool" Binding="{Binding RemoteAccessTool}" Width="115" />
+                        <DataGridTextColumn Header="Used others' creds" Binding="{Binding UsedOthersCreds}" Width="115" />
+                        <DataGridTextColumn Header="Creds used by others" Binding="{Binding CredsUsedByOthers}" Width="125" />
                         <DataGridTextColumn Header="Privileged" Binding="{Binding Privileged}" Width="80" />
-                        <DataGridTextColumn Header="Suspicion" Binding="{Binding SuspicionScore}" Width="*" />
+                        <DataGridTextColumn Header="Group changes" Binding="{Binding GroupChanges}" Width="95" />
+                        <DataGridTextColumn Header="Suspicion" Binding="{Binding SuspicionScore}" Width="75" />
+                        <DataGridTextColumn Header="Top hosts" Binding="{Binding Hosts}" Width="*" />
                     </DataGrid.Columns>
                 </DataGrid>
             </TabItem>
@@ -476,13 +579,19 @@
                           RowStyle="{StaticResource PivotRowStyle}" CellStyle="{StaticResource IocCellStyle}" ClipboardCopyMode="IncludeHeader">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Host" Binding="{Binding Host}" Width="170" />
-                        <DataGridTextColumn Header="First Seen" Binding="{Binding FirstSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
-                        <DataGridTextColumn Header="Last Seen" Binding="{Binding LastSeen, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="First Seen (UTC)" Binding="{Binding FirstSeen, Converter={StaticResource Utc}}" SortMemberPath="FirstSeen" Width="150" />
+                        <DataGridTextColumn Header="Last Seen (UTC)" Binding="{Binding LastSeen, Converter={StaticResource Utc}}" SortMemberPath="LastSeen" Width="150" />
                         <DataGridTextColumn Header="Users" Binding="{Binding Users}" Width="80" />
                         <DataGridTextColumn Header="Source IPs" Binding="{Binding SourceIps}" Width="90" />
                         <DataGridTextColumn Header="Success" Binding="{Binding Successful}" Width="80" />
                         <DataGridTextColumn Header="Failed" Binding="{Binding Failed}" Width="70" />
-                        <DataGridTextColumn Header="RDP" Binding="{Binding Rdp}" Width="60" />
+                        <DataGridTextColumn Header="RDP in" Binding="{Binding Rdp}" Width="60" />
+                        <DataGridTextColumn Header="Remote exec" Binding="{Binding RemoteExec}" Width="85" />
+                        <DataGridTextColumn Header="Remote access tool" Binding="{Binding RemoteAccessTool}" Width="115" />
+                        <DataGridTextColumn Header="RDP out" Binding="{Binding RdpOutbound}" Width="65" />
+                        <DataGridTextColumn Header="Service installs" Binding="{Binding ServiceInstalls}" Width="100" />
+                        <DataGridTextColumn Header="Log clears" Binding="{Binding LogClears}" Width="75" />
+                        <DataGridTextColumn Header="Time zone" Binding="{Binding TimeZone}" Width="150" />
                         <DataGridTextColumn Header="Privileged" Binding="{Binding Privileged}" Width="*" />
                     </DataGrid.Columns>
                 </DataGrid>
@@ -498,10 +607,13 @@
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="80" />
                         <DataGridTextColumn Header="Rule" Binding="{Binding RuleName}" Width="220" />
-                        <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat=yyyy-MM-dd HH:mm:ss}" Width="150" />
+                        <DataGridTextColumn Header="Timestamp (UTC)" Binding="{Binding Timestamp, Converter={StaticResource Utc}}" SortMemberPath="Timestamp" Width="150" />
                         <DataGridTextColumn Header="User" Binding="{Binding User}" Width="130" />
                         <DataGridTextColumn Header="Source IP" Binding="{Binding SourceIp}" Width="120" />
                         <DataGridTextColumn Header="Host" Binding="{Binding Host}" Width="120" />
+                        <DataGridTextColumn Header="Count" Binding="{Binding Count}" Width="55" />
+                        <DataGridTextColumn Header="MITRE" Binding="{Binding Mitre}" Width="110" />
+                        <DataGridTextColumn Header="Session #" Binding="{Binding SessionRef}" Width="65" />
                         <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="280" />
                         <DataGridTextColumn Header="Related" Binding="{Binding RelatedEventIds}" Width="100" />
                         <DataGridTextColumn Header="Reasoning" Binding="{Binding Reasoning}" Width="*" />

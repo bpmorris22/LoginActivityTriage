@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>LoginActivityTriageCli</AssemblyName>
+    <RootNamespace>LoginActivityTriage.Cli</RootNamespace>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- Framework-dependent single file: small, and runs on any box with the .NET 8+ runtime
+         (the HTA sets DOTNET_ROLL_FORWARD=Major so .NET 9/10-only machines work too). -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>embedded</DebugType>
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LoginActivityTriage.Core\LoginActivityTriage.Core.csproj" />
+    <ProjectReference Include="..\LoginActivityTriage.Parsing\LoginActivityTriage.Parsing.csproj" />
+    <ProjectReference Include="..\LoginActivityTriage.Analytics\LoginActivityTriage.Analytics.csproj" />
+    <ProjectReference Include="..\LoginActivityTriage.Export\LoginActivityTriage.Export.csproj" />
+  </ItemGroup>
+
+</Project>

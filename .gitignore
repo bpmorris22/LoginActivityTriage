@@ -15,3 +15,7 @@ obj/
 *.latdb-shm
 *.db
 *.sqlite
+
+## HTA run output (case data - never commit evidence-derived results)
+_Processed/
+IOC.txt

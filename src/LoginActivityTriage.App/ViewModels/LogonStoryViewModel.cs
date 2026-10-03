@@ -1,12 +1,14 @@
 using System.Collections.ObjectModel;
+using LoginActivityTriage.Core.Mapping;
 using LoginActivityTriage.Core.Models;
 
 namespace LoginActivityTriage.App.ViewModels;
 
 /// <summary>
-/// Backing model for the Logon Story window: every event related to a chosen
-/// pivot (user / source IP / host / single event) inside a configurable time
-/// window, ordered chronologically.
+/// Backing model for the Logon Story window: every event related to a chosen pivot
+/// (user / source IP / host / remote session) inside a configurable time window, ordered
+/// chronologically. Users and hosts compare on normalised keys, so "CONTOSO\jdoe" matches
+/// "jdoe" and "HOST01.contoso.local" matches "HOST01".
 /// </summary>
 public sealed class LogonStoryViewModel : Mvvm.ObservableObject
 {
@@ -27,20 +29,20 @@ public sealed class LogonStoryViewModel : Mvvm.ObservableObject
         Events = new ObservableCollection<NormalizedEvent>(events);
     }
 
-    /// <summary>
-    /// Builds a story around an anchor event. Includes every event sharing the
-    /// same user, source IP or host within +/- windowMinutes of the anchor.
-    /// </summary>
+    /// <summary>Every event sharing the anchor's user, source IP or host within +/- windowMinutes.</summary>
     public static LogonStoryViewModel BuildForEvent(
         NormalizedEvent anchor, IEnumerable<NormalizedEvent> all, int windowMinutes)
     {
         var from = anchor.Timestamp.AddMinutes(-windowMinutes);
         var to = anchor.Timestamp.AddMinutes(windowMinutes);
+        var ip = IpUtil.IsLocalOrBlank(anchor.SourceIp) ? null : anchor.SourceIp;
 
         bool Related(NormalizedEvent e) =>
-            Same(e.TargetUserName, anchor.TargetUserName) ||
-            Same(e.SourceIp, anchor.SourceIp) ||
-            Same(e.Hostname, anchor.Hostname);
+            UserKey.Same(e.TargetUserName, anchor.TargetUserName) ||
+            UserKey.Same(e.SubjectUserName, anchor.TargetUserName) ||
+            (ip is not null && string.Equals(e.SourceIp, ip, StringComparison.OrdinalIgnoreCase)) ||
+            HostKey.Same(e.Hostname, anchor.Hostname) ||
+            (anchor.RemoteSessionRef is not null && e.RemoteSessionRef == anchor.RemoteSessionRef);
 
         var events = all
             .Where(e => e.Timestamp >= from && e.Timestamp <= to && Related(e))
@@ -48,8 +50,18 @@ public sealed class LogonStoryViewModel : Mvvm.ObservableObject
             .ToList();
 
         var pivot = $"User: {anchor.TargetUserName ?? "-"}   Source IP: {anchor.SourceIp ?? "-"}   Host: {anchor.Hostname ?? "-"}";
-        var title = $"Logon Story +/-{windowMinutes}m around {anchor.Timestamp:yyyy-MM-dd HH:mm:ss}";
+        var title = $"Logon Story +/-{windowMinutes}m around {anchor.Timestamp.UtcDateTime:yyyy-MM-dd HH:mm:ss}Z";
         return new LogonStoryViewModel(title, pivot, anchor.Timestamp, windowMinutes, events);
+    }
+
+    /// <summary>The member events of one stitched remote session.</summary>
+    public static LogonStoryViewModel BuildForSession(RemoteSession s)
+    {
+        var title = $"Session #{s.Id}: {s.Technique}{(s.Variant is null ? "" : $" ({s.Variant})")} {s.Direction}";
+        var pivot = $"Host: {s.Host}   User: {s.User ?? "-"}   Source: {s.SourceIp ?? s.SourceHost ?? "-"}   " +
+                    $"Confidence: {s.Confidence}   {s.Evidence}";
+        return new LogonStoryViewModel(title, pivot, s.Start, (int)Math.Ceiling(s.Duration.TotalMinutes),
+            s.Events.OrderBy(e => e.Timestamp));
     }
 
     /// <summary>Builds a story around a free-form pivot value (user, IP or host).</summary>
@@ -62,9 +74,9 @@ public sealed class LogonStoryViewModel : Mvvm.ObservableObject
 
         bool Match(NormalizedEvent e) => pivotKind switch
         {
-            "user" => Same(e.TargetUserName, pivotValue),
-            "ip"   => Same(e.SourceIp, pivotValue),
-            "host" => Same(e.Hostname, pivotValue),
+            "user" => UserKey.Same(e.TargetUserName, pivotValue) || UserKey.Same(e.SubjectUserName, pivotValue),
+            "ip"   => string.Equals(e.SourceIp, pivotValue, StringComparison.OrdinalIgnoreCase),
+            "host" => HostKey.Same(e.Hostname, pivotValue),
             _      => false,
         };
 
@@ -76,8 +88,4 @@ public sealed class LogonStoryViewModel : Mvvm.ObservableObject
         var title = $"Logon Story for {pivotKind} '{pivotValue}' +/-{windowMinutes}m";
         return new LogonStoryViewModel(title, $"{pivotKind}: {pivotValue}", anchor, windowMinutes, events);
     }
-
-    private static bool Same(string? a, string? b) =>
-        !string.IsNullOrWhiteSpace(a) && !string.IsNullOrWhiteSpace(b) &&
-        string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 }
