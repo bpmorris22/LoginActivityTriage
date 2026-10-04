@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Login Activity Triage — Manual</title>
-<meta name="description" content="User manual for Login Activity Triage 0.3.0: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
+<meta name="description" content="User manual for Login Activity Triage 0.3.1: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
 <style>
   :root{
     --bg:#ffffff; --panel:#f6f8fa; --text:#1f2328; --muted:#59636e; --line:#d1d9e0; --accent:#0969da;
@@ -65,7 +65,7 @@
 <div class="layout">
 <nav class="toc" aria-label="Contents">
   <div class="brand">Login Activity Triage</div>
-  <div class="ver">Manual &middot; version 0.3.0</div>
+  <div class="ver">Manual &middot; version 0.3.1</div>
   <ol>
     <li><a href="#overview">What it does</a></li>
     <li><a href="#install">Install &amp; requirements</a></li>
@@ -203,7 +203,7 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
   <li>Square <strong>activity labels</strong> mark the session and power story: <code>Logon &middot; console / network / RDP / cached / unlock</code>, <code>Logon failed</code>, <code>Logoff</code>, <code>Disconnect</code>, <code>Reconnect</code>, <code>Boot</code>, <code>Shutdown</code>, <code>Restart</code> and <code>Unexpected shutdown</code>. Rounded pills are remote-access techniques.</li>
   <li>Row colours: red = failure, purple = remote execution, a yellow left edge = privileged, a red left edge = IOC hit.</li>
   <li>Restarts and shutdowns (User32 1074) name the account and process that requested them.</li>
-  <li>Click an <strong>EventId</strong> (or <strong>Open in Event Viewer</strong> on the detail card) to open the source <code>.evtx</code> in Windows Event Viewer already filtered to that one record, to read the raw event as Windows renders it. The app runs <code>eventvwr /l:"&lt;file&gt;" /f:"*[System[(EventRecordID=&lt;n&gt;)]]"</code>; results from <em>This machine</em> open the live channel with <code>/c:</code> instead. The evidence must still be at the path it was processed from. Event Viewer reads the file without changing it; <em>Clear Filter</em> in its Actions pane shows the whole log.</li>
+  <li>Click an <strong>EventId</strong> (or <strong>Open in Event Viewer</strong> on the detail card) to open the source <code>.evtx</code> in Windows Event Viewer already filtered to that one record, to read the raw event as Windows renders it. The app runs <code>eventvwr /l:"&lt;file&gt;" /f:"*[System[(EventRecordID=&lt;n&gt;)]]"</code>; results from <em>This machine</em> open the live channel with <code>/c:</code> instead. The evidence must still be at the path it was processed from. Event Viewer cannot open a file whose path is over 259 characters (deep Velociraptor / KAPE trees), so such a log is opened from a copy in <code>%TEMP%\LoginActivityTriage-evx</code>, which the app removes at its next start. Event Viewer reads the file without changing it; <em>Clear Filter</em> in its Actions pane shows the whole log.</li>
 </ul>
 
 <h3 id="tab-users">Users &amp; Source IPs</h3>
@@ -351,13 +351,13 @@ LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machin
   <tr><td>Live run misses logons</td><td>The Security log needs elevation: use <strong>Relaunch elevated</strong>.</td></tr>
   <tr><td>Odd characters / file errors from a network share</td><td>Copy the app folder to a local disk; zone policy restricts the HTA's file access on shares.</td></tr>
   <tr><td>The timeline is slow</td><td>Narrow the date window, or open <code>events.csv</code> in Timeline Explorer.</td></tr>
-  <tr><td>Log note "&hellip;characters (over MAX_PATH)"</td><td>Informational. Deep Velociraptor / KAPE paths (260+ characters) are checked and read through their <code>\\?\</code> extended-length form. If the note says the path could not be verified, the engine reports it when it is really missing.</td></tr>
+  <tr><td>Log note "&hellip;characters (over MAX_PATH)"</td><td>Informational. Deep Velociraptor / KAPE paths (260+ characters) are checked and read through their <code>\\?\</code> extended-length form. If the note says the path could not be verified, the engine reports it when it is really missing. Event Viewer cannot open such a path at all, so <em>Open in Event Viewer</em> uses a temporary copy (see Timeline).</td></tr>
   <tr><td>"Source log not found" when opening an event in Event Viewer</td><td>The evidence was moved or the results were made on another machine: the <code>SourceFile</code> column holds the path at processing time. Put the evidence back there, or process again from its new location.</td></tr>
   <tr><td>Event Viewer opens on a live log with no events</td><td>The live log has rolled over since processing and that record is gone. Collect the logs to files and process those.</td></tr>
 </table>
 
 <footer>
-  Login Activity Triage 0.3.0 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
+  Login Activity Triage 0.3.1 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
   <a href="https://github.com/bpmorris22/LoginActivityTriage">github.com/bpmorris22/LoginActivityTriage</a> &middot;
   see <code>CHANGELOG.md</code> for what changed in each version.
 </footer>

@@ -284,7 +284,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.3.0";
+var APP_VERSION = "0.3.1";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -397,9 +397,9 @@ function folderExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObj
    \\?\ extended-length form, so a long path is re-checked that way (lpKind). An operator-given input that even the
    \\?\ form cannot see is still trusted: a note is logged and the long-path-aware engine reports a genuine miss -
    an FSO miss on a long path is never treated as authoritative.
-   The Windows event log API (the engine's EVTX reader, and Event Viewer) has the same 259-character limit and the
-   same cure (VERIFIED 2026-10-04): the engine opens a long .evtx through \\?\ itself (0.3.0), and Event Viewer is
-   handed the \\?\ form (openInEventViewer). */
+   The Windows event log API (the engine's EVTX reader) has the same 259-character limit and the same cure
+   (VERIFIED 2026-10-04): the engine opens a long .evtx through \\?\ itself (0.3.0). Event Viewer refuses both forms,
+   so it is handed a short temporary copy (openInEventViewer, 0.3.1). */
 var MAXP=259;
 function isLongPath(p){ return String(p||"").length>MAXP; }
 function lpForm(p){ p=String(p||"").replace(/\//g,"\\");
@@ -1253,16 +1253,38 @@ function evxSource(d,row){ var src=cell(d,row,"SourceFile"), rec=cell(d,row,"Rec
   if(!src || !/^\d+$/.test(rec)) return null;
   var file=/\.(evtx|evt)$/i.test(src); return { src:src, rec:rec, file:file, label:file?baseName(src):src }; }
 function openInEventViewer(row){
-  var d=ds(VIEWS.timeline.ds), s=row?evxSource(d,row):null, arg;
+  var d=ds(VIEWS.timeline.ds), s=row?evxSource(d,row):null, arg, via="";
   if(!s){ setStatus("This event has no source log / record id (results from an older engine) - Process again.","err"); return; }
   if(s.file){ if(!fileSeen(s.src)){ setStatus("Source log not found: "+s.src+" - the evidence was moved, or these results were made on another machine.","err"); return; }
-    arg='/l:"'+(isLongPath(s.src) && lpForm(s.src) || s.src)+'"'; }   // the event log API cannot open a 260+ char path, its \\?\ form it can
+    var lf=s.src;
+    if(isLongPath(s.src)){ try{ lf=evxShortCopy(s.src); via=" - from a temporary copy (Event Viewer cannot open a path over 259 characters)"; }
+      catch(ec){ setStatus("Could not copy "+s.label+" to a short path for Event Viewer (it cannot open a path over 259 characters): "+ec.message,"err"); return; } }
+    arg='/l:"'+lf+'"'; }
   else { var h=hostKey(cell(d,row,"Hostname")), me=hostKey(machineName()); // live results: SourceFile is the channel of the machine that was read
     if(h && me && h!==me){ setStatus("This event came from the live logs of "+h+" - open Event Viewer on that machine.","err"); return; }
     arg='/c:"'+s.src+'"'; }
   try{ new ActiveXObject("Shell.Application").ShellExecute("eventvwr.exe", arg+' /f:"*[System[(EventRecordID='+s.rec+')]]"', "", "open", 1);
-    setStatus("Opening event "+cell(d,row,"EventId")+" (record "+s.rec+" of "+s.label+") in Event Viewer...","ok"); }
+    setStatus("Opening event "+cell(d,row,"EventId")+" (record "+s.rec+" of "+s.label+") in Event Viewer"+via+"...","ok"); }
   catch(e){ setStatus("Could not launch Event Viewer: "+e.message,"err"); } }
+/* Event Viewer cannot open a saved log at a path of 260+ characters in ANY form: for the plain path and for its \\?\
+   form alike it says "The following file does not exist" (VERIFIED 2026-10-04, Win11 26200), although the event log API
+   underneath reads the \\?\ form. Such a log is opened from a copy at a short path: one read of the evidence through
+   \\?\, never a write. Copies live in %TEMP%\LoginActivityTriage-evx (only copies, never links into evidence) and are
+   removed at the next start; the Event Log service keeps a log it opened locked for a while after Event Viewer closes. */
+var EVXCOPY={};
+function evxDir(){ try{ return new ActiveXObject("Scripting.FileSystemObject").GetSpecialFolder(2)+"\\LoginActivityTriage-evx"; }catch(e){ return ""; } }
+function evxShortCopy(src){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), c=EVXCOPY[src], from=lpForm(src);
+  if(c && fso.FileExists(c)) return c;   // one copy per source log per session
+  var dir=evxDir(); if(!dir || !from) throw new Error("no temporary folder");
+  dir+="\\"+uid(); ensureFolder(dir); c=dir+"\\"+baseName(src);
+  // cmd copy, not FSO: inside mshta File.Copy / CopyFile fail on a \\?\ source (0x800a0005, VERIFIED) though FileExists sees it
+  var r=runBat(['copy /b /y "'+batEsc(from)+'" "'+batEsc(c)+'" > "__LOG__" 2>&1'], false);
+  if(!fso.FileExists(c) || fso.GetFile(c).Size!==fso.GetFile(from).Size) throw new Error(trimStr(r.log)||"the copy failed");
+  EVXCOPY[src]=c; return c; }
+function evxCleanup(){ var dir=evxDir(); if(!dir) return;   // copies Event Viewer / the Event Log service still hold stay until next time
+  try{ var fso=new ActiveXObject("Scripting.FileSystemObject"); if(!fso.FolderExists(dir)) return;
+    for(var e=new Enumerator(fso.GetFolder(dir).SubFolders); !e.atEnd(); e.moveNext()){ try{ fso.DeleteFolder(e.item().Path, true); }catch(e1){} } }catch(e2){} }
 
 /* ---------- command line (Artifact-Finder hand-off) ---------- */
 function getCommandLine(){
@@ -1465,6 +1487,7 @@ function init(){
     if(evx) openInEventViewer(rows[ix]); };
 
   loadToolkitIoc();
+  evxCleanup();
   trace("init: wiring done"); checkElevation(); updateLiveWarn(); trace("elevated="+ELEVATED);
   checkEngine(); trace("engine="+EXE+" v"+ENGINE_VER);
   var cli=parseCli(), had=false; trace("cli input="+cli.input+" selftest="+cli.selftest);

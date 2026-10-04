@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.1 — 2026-10-04
+
+### Fixed
+- **Open in Event Viewer for a source log past MAX_PATH** did not work in 0.3.0. Event Viewer
+  refuses a saved log at a path of 260+ characters in any form: for the plain path and for its
+  `\\?\` form alike it reports "The following file does not exist", although the event log API
+  underneath reads the `\\?\` form. Such a log is now copied (read once from the evidence, never
+  written) to `%TEMP%\LoginActivityTriage-evx` and Event Viewer opens the copy, still filtered to
+  the one record. The status line says when a copy is used; the copies are removed at the next
+  start (the Event Log service keeps a log it opened locked for a while after Event Viewer closes).
+
+### Changed
+- CI: the workflow actions moved to their Node 24 majors (checkout v7, setup-dotnet v6,
+  upload-artifact v7, action-gh-release v3).
+
 ## 0.3.0 — 2026-10-04
 
 ### Fixed
