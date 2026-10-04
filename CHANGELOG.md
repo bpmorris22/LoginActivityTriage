@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — 2026-10-04
+
+### Fixed
+- **Evidence paths past MAX_PATH** (260 characters), routine in Velociraptor / KAPE trees
+  (`...\Collection-HOST-...\uploads\auto\C%3A\Windows\System32\winevt\Logs\...`):
+  - Engine: the Windows event log API failed every such `.evtx` with status 3 ("The system cannot
+    find the path specified"), so the run ended "None of the input logs could be read" (exit 4).
+    The reader now opens a long path through its `\\?\` extended-length form; shorter paths are
+    passed unchanged.
+  - HTA: inside mshta, FileSystemObject reports a 260+ character path as missing, so a long folder
+    handed over by the DFIR Artifact Finder (or typed in) was refused ("CLI input not found",
+    "Directory not found"). The input checks now re-check a long path through `\\?\` (the HTA
+    wrapper family's long-path fix); a long path that cannot be verified at all is passed on with a
+    note, and the engine reports a real miss.
+  - HTA: *Open in Event Viewer* works for a long source log (Event Viewer is handed the `\\?\` form)
+    instead of reporting "Source log not found".
+  - HTA: a rejected command-line input now stays on screen as "CLI input not found" and is logged;
+    the start-up prompt used to overwrite it, so the hand-off failed silently.
+
 ## 0.2.2 — 2026-10-04
 
 ### Added

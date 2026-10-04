@@ -19,8 +19,24 @@ public sealed class EvtxFileReader
     /// <summary>Yields each event from an EVTX file.</summary>
     public IEnumerable<EvtxRecord> Read(string evtxPath, Action<Exception>? onRecordError = null,
         IReadOnlySet<int>? wantedEventIds = null) =>
-        ReadQuery(new EventLogQuery(evtxPath, PathType.FilePath) { TolerateQueryErrors = true },
+        ReadQuery(new EventLogQuery(ApiPath(evtxPath), PathType.FilePath) { TolerateQueryErrors = true },
             onRecordError, wantedEventIds);
+
+    /// <summary>
+    /// The path to hand the Windows event log API. It is not long-path aware: a file path of
+    /// MAX_PATH (260) characters or more fails with status 3 ("cannot find the path") even with
+    /// LongPathsEnabled, and Velociraptor / KAPE collection trees routinely go past that. The
+    /// \\?\ extended-length form of the same path opens normally. Shorter paths are unchanged.
+    /// </summary>
+    public static string ApiPath(string path)
+    {
+        if (string.IsNullOrEmpty(path) || path.StartsWith(@"\\?\", StringComparison.Ordinal)
+            || path.StartsWith(@"\\.\", StringComparison.Ordinal))
+            return path;
+        var full = Path.GetFullPath(path);
+        if (full.Length < 260) return path;
+        return full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full[2..] : @"\\?\" + full;
+    }
 
     /// <summary>Yields each event from a live channel, e.g. "Security" (needs admin rights).</summary>
     public IEnumerable<EvtxRecord> ReadChannel(string channel, Action<Exception>? onRecordError = null,

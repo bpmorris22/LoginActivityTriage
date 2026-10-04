@@ -284,7 +284,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.2.2";
+var APP_VERSION = "0.3.0";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -390,6 +390,35 @@ function writeUtf8(path,text,bom){
 }
 function fileExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FileExists(p); }catch(e){ return false; } }
 function folderExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FolderExists(p); }catch(e){ return false; } }
+/* ---------- long paths (MAX_PATH, family 2026-10-03) ----------
+   mshta is not long-path aware: plain FSO FileExists / FolderExists / GetFolder report a path of 260+ characters
+   as missing even when it exists (VERIFIED 2026-10-03, Win11 + LongPathsEnabled=1: 259 chars seen, 260 not), and
+   Velociraptor / KAPE collection paths routinely exceed that. The same FSO calls DO see such a path through its
+   \\?\ extended-length form, so a long path is re-checked that way (lpKind). An operator-given input that even the
+   \\?\ form cannot see is still trusted: a note is logged and the long-path-aware engine reports a genuine miss -
+   an FSO miss on a long path is never treated as authoritative.
+   The Windows event log API (the engine's EVTX reader, and Event Viewer) has the same 259-character limit and the
+   same cure (VERIFIED 2026-10-04): the engine opens a long .evtx through \\?\ itself (0.3.0), and Event Viewer is
+   handed the \\?\ form (openInEventViewer). */
+var MAXP=259;
+function isLongPath(p){ return String(p||"").length>MAXP; }
+function lpForm(p){ p=String(p||"").replace(/\//g,"\\");
+  if(/^[A-Za-z]:\\/.test(p)) return "\\\\?\\"+p;
+  if(/^\\\\[^\\?.]/.test(p)) return "\\\\?\\UNC\\"+p.substring(2);
+  return ""; }
+function lpKind(p){ var q=lpForm(p); if(!q) return "";   // "f" file / "d" folder / "" not seen, through the \\?\ form
+  try{ var fso=new ActiveXObject("Scripting.FileSystemObject"); if(fso.FileExists(q)) return "f"; if(fso.FolderExists(q)) return "d"; }catch(e){}
+  return ""; }
+function inputSeen(p, wantDir, what){
+  if(wantDir ? folderExists(p) : fileExists(p)) return true;
+  if(!isLongPath(p)) return false;
+  var k=lpKind(p);
+  if(k && k!==(wantDir?"d":"f")) return false;   // it exists, but as the other kind
+  appendLog("Note: the "+what+" path is "+String(p).length+" characters (over MAX_PATH) - "+(k
+    ? "verified through its \\\\?\\ extended-length form."
+    : "this app cannot verify it; the engine reads it and reports it if it is really missing: "+p));
+  return true; }
+function fileSeen(p){ return fileExists(p) || (isLongPath(p) && lpKind(p)==="f"); }   // verified only - never trusted blind
 function ensureFolder(p){ var fso=new ActiveXObject("Scripting.FileSystemObject"); if(!p||fso.FolderExists(p)) return;
   ensureFolder(fso.GetParentFolderName(p)); fso.CreateFolder(p); }
 function uid(){ return new Date().getTime()+""+Math.floor(Math.random()*100000); }
@@ -536,9 +565,8 @@ function processRun(){
   var mode=$("inMode").value, inp=trimStr($("inPath").value);
   if(!requireHost()) return;
   var outdir=trimStr($("outDir").value);
-  var fso=new ActiveXObject("Scripting.FileSystemObject");
-  if(mode==="d" && (!inp || !fso.FolderExists(inp))){ setStatus("Directory not found: "+inp,"err"); return; }
-  if(mode==="f" && (!inp || !fso.FileExists(inp))){ setStatus("File not found: "+inp,"err"); return; }
+  if(mode==="d" && (!inp || !inputSeen(inp,true,"input folder"))){ setStatus("Directory not found: "+inp,"err"); return; }
+  if(mode==="f" && (!inp || !inputSeen(inp,false,"input file"))){ setStatus("File not found: "+inp,"err"); return; }
   if(!outdir){ setStatus("Set an output directory","err"); return; }
   if(!EXE && !checkEngine()){ setStatus(ENGINE_EXE+" not found - build or download the engine first.","err"); return; }
   if(BUSY){ setStatus("A run is already in progress - wait for it to finish.","err"); return; }
@@ -1227,8 +1255,8 @@ function evxSource(d,row){ var src=cell(d,row,"SourceFile"), rec=cell(d,row,"Rec
 function openInEventViewer(row){
   var d=ds(VIEWS.timeline.ds), s=row?evxSource(d,row):null, arg;
   if(!s){ setStatus("This event has no source log / record id (results from an older engine) - Process again.","err"); return; }
-  if(s.file){ if(!fileExists(s.src)){ setStatus("Source log not found: "+s.src+" - the evidence was moved, or these results were made on another machine.","err"); return; }
-    arg='/l:"'+s.src+'"'; }
+  if(s.file){ if(!fileSeen(s.src)){ setStatus("Source log not found: "+s.src+" - the evidence was moved, or these results were made on another machine.","err"); return; }
+    arg='/l:"'+(isLongPath(s.src) && lpForm(s.src) || s.src)+'"'; }   // the event log API cannot open a 260+ char path, its \\?\ form it can
   else { var h=hostKey(cell(d,row,"Hostname")), me=hostKey(machineName()); // live results: SourceFile is the channel of the machine that was read
     if(h && me && h!==me){ setStatus("This event came from the live logs of "+h+" - open Event Viewer on that machine.","err"); return; }
     arg='/c:"'+s.src+'"'; }
@@ -1299,10 +1327,13 @@ function applyCli(cli){
   if(cli.outDir){ $("outDir").value=cli.outDir; OUT_TOUCHED=true; hostGuessFrom(cli.outDir); }
   var res=resultsFolderOf(cli.input);
   if(res){ appendLog("CLI: loading results "+res); window.setTimeout(function(){ loadResults(res); if(cli.selftest) runSelfTest(); },60); return true; }
+  var lng=isLongPath(cli.input), lk=lng?lpKind(cli.input):"";   // FSO cannot see a 260+ char path: ask its \\?\ form
   if(/^live$/i.test(cli.input)){ $("inMode").value="live"; $("inPath").value=""; hostGuessFrom("live"); }
-  else if(fso.FolderExists(cli.input)){ $("inMode").value="d"; $("inPath").value=cli.input; }
-  else if(fso.FileExists(cli.input)){ $("inMode").value="f"; $("inPath").value=cli.input; }
-  else { setStatus("CLI input not found: "+cli.input,"err"); return false; }
+  else if(fso.FolderExists(cli.input) || lk==="d"){ $("inMode").value="d"; $("inPath").value=cli.input; }
+  else if(fso.FileExists(cli.input) || lk==="f"){ $("inMode").value="f"; $("inPath").value=cli.input; }
+  else if(lng){ $("inMode").value=(/\.evtx$/i.test(cli.input)?"f":"d"); $("inPath").value=cli.input;
+    appendLog("CLI: the input path is over MAX_PATH and could not be verified here - treating it as a "+($("inMode").value==="f"?"file":"folder")+"; the engine reports it if it is really missing."); }
+  else { setStatus("CLI input not found: "+cli.input,"err"); appendLog("CLI input not found: "+cli.input); return false; }
   if(!cli.outDir) hostGuessFrom(cli.input);
   if(cli.auto){ appendLog("CLI: /auto - processing "+cli.input); window.setTimeout(processRun,300); }
   else setStatus("CLI: input prefilled. Click 'Process -> analyze' to run.","muted");
@@ -1438,7 +1469,8 @@ function init(){
   checkEngine(); trace("engine="+EXE+" v"+ENGINE_VER);
   var cli=parseCli(), had=false; trace("cli input="+cli.input+" selftest="+cli.selftest);
   try{ had=applyCli(cli); }catch(e){ appendLog("CLI parse error: "+e.message); }
-  if(!had){ $("inMode").value="d"; setStatus("Pick an event-log folder (or 'This machine'), set the target hostname, then Process. Or Load results...","muted"); }
+  // A rejected CLI input keeps its "CLI input not found" status (the default prompt used to overwrite it).
+  if(!had){ $("inMode").value="d"; if(!cli.input || !trimStr($("status").innerText)) setStatus("Pick an event-log folder (or 'This machine'), set the target hostname, then Process. Or Load results...","muted"); }
 }
 function updateLiveWarn(){
   var live=$("inMode").value==="live";
