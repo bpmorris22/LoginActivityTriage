@@ -284,7 +284,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.2.1";
+var APP_VERSION = "0.2.2";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -927,6 +927,8 @@ function cellHtml(view,d,row,col){
   var v=cell(d,row,col);
   if(col==="Severity") return '<span class="chip sv-'+esc(v)+'">'+esc(v)+'</span>';
   if(col==="Technique") return actChip(d,row)+techChip(v, cell(d,row,"Direction"));
+  if(col==="EventId" && view==="timeline"){ var es=evxSource(d,row);
+    if(es) return '<span class="lnk" data-evx="1" title="'+esc("Open in Event Viewer, filtered to this event (record "+es.rec+" of "+es.label+")")+'">'+esc(v)+'</span>'; }
   if(/^(Timestamp|Start|End|FirstSeen|LastSeen)$/.test(col)) return esc(fmtTs(v));
   if(col==="Commands"||col==="CommandLine"||col==="Details"||col==="Description"||col==="Detail") return '<span title="'+esc(khText(v))+'">'+khHtml(v.length>160?v.substring(0,160)+"...":v, v)+'</span>';
   return khHtml(v);
@@ -992,6 +994,7 @@ function renderDetail(row){
   if(sref) h.push('<button class="btn" onclick="sessionEvents(\''+jsq(sref)+'\')">Events of session #'+esc(sref)+'</button>');
   if(VIEW==="timeline") h.push('<button class="btn" onclick="storyAround(30)" title="Every event within 30 minutes that shares this user, source IP or host">Logon story &plusmn;30 min</button>'+
                                '<button class="btn" onclick="storyAround(120)">&plusmn;2 h</button>');
+  if(VIEW==="timeline" && evxSource(d,row)) h.push('<button class="btn" onclick="openInEventViewer(DETROW)" title="Open the source log in Windows Event Viewer, filtered to this one record">Open in Event Viewer</button>');
   if(VIEW==="sessions" && cell(d,row,"Start")) h.push('<button class="btn" onclick="storyAround(30)">Logon story &plusmn;30 min</button>');
   if(user) h.push('<button class="btn" onclick="pinTo(\'timeline\',\'User\',\''+jsq(user.split(";")[0])+'\')">Timeline: user '+esc(user)+'</button>');
   if(ip) h.push('<button class="btn" onclick="pinTo(\'timeline\',\'SourceIp\',\''+jsq(ip.split(";")[0])+'\')">Timeline: IP '+esc(ip.split(";")[0])+'</button>');
@@ -1215,6 +1218,23 @@ function resolveTle(){
 function openInTle(){ var csv=RESDIR+"\\events.csv"; if(!fileExists(csv)){ setStatus("No events.csv loaded","err"); return; }
   var tle=resolveTle(); if(!tle){ setStatus("Timeline Explorer not found - open "+csv+" manually.","err"); return; }
   try{ new ActiveXObject("WScript.Shell").Run('"'+tle+'" "'+csv+'"',1,false); setStatus("Opening events.csv in Timeline Explorer...","ok"); }catch(e){ setStatus("Could not launch Timeline Explorer: "+e.message,"err"); } }
+/* One event in Windows Event Viewer: eventvwr /l:<saved log> (live results: /c:<channel>) /f:<XPath on EventRecordID>,
+   which opens the log already filtered to that record. ShellExecute, not WScript.Shell.Run: Run expands %VAR%
+   and Velociraptor paths carry %3A / %254. Event Viewer reads the file through the Event Log API without writing to it. */
+function evxSource(d,row){ var src=cell(d,row,"SourceFile"), rec=cell(d,row,"RecordId");
+  if(!src || !/^\d+$/.test(rec)) return null;
+  var file=/\.(evtx|evt)$/i.test(src); return { src:src, rec:rec, file:file, label:file?baseName(src):src }; }
+function openInEventViewer(row){
+  var d=ds(VIEWS.timeline.ds), s=row?evxSource(d,row):null, arg;
+  if(!s){ setStatus("This event has no source log / record id (results from an older engine) - Process again.","err"); return; }
+  if(s.file){ if(!fileExists(s.src)){ setStatus("Source log not found: "+s.src+" - the evidence was moved, or these results were made on another machine.","err"); return; }
+    arg='/l:"'+s.src+'"'; }
+  else { var h=hostKey(cell(d,row,"Hostname")), me=hostKey(machineName()); // live results: SourceFile is the channel of the machine that was read
+    if(h && me && h!==me){ setStatus("This event came from the live logs of "+h+" - open Event Viewer on that machine.","err"); return; }
+    arg='/c:"'+s.src+'"'; }
+  try{ new ActiveXObject("Shell.Application").ShellExecute("eventvwr.exe", arg+' /f:"*[System[(EventRecordID='+s.rec+')]]"', "", "open", 1);
+    setStatus("Opening event "+cell(d,row,"EventId")+" (record "+s.rec+" of "+s.label+") in Event Viewer...","ok"); }
+  catch(e){ setStatus("Could not launch Event Viewer: "+e.message,"err"); } }
 
 /* ---------- command line (Artifact-Finder hand-off) ---------- */
 function getCommandLine(){
@@ -1403,14 +1423,15 @@ function init(){
   $("detCopy").onclick=copyDetail;
 
   document.onclick=function(e){ e=e||window.event; var t=e.target||e.srcElement; if(!t) return;
-    var s=t.getAttribute?t.getAttribute("data-sort"):null;
+    var s=t.getAttribute?t.getAttribute("data-sort"):null, evx=t.getAttribute?t.getAttribute("data-evx"):null;
     if(s){ var st=SORT[VIEW]||{}; SORT[VIEW]={col:s, dir:(st.col===s?-st.dir:(/Score|Count|Failed|RemoteExec|RemoteAccessTool|Creds|Connections|Severity/.test(s)?-1:1))}; render(); return; }
     var n=t; while(n && n.tagName!=="TR"){ n=n.parentNode; if(n && n.tagName==="TABLE"){ n=null; break; } }
     if(!n || !n.getAttribute) return; var di=n.getAttribute("data-i"); if(di==null||di==="") return;
     var rows=window.__rows||[], ix=parseInt(di,10); if(ix<0||ix>=rows.length) return;
     renderDetail(rows[ix]);
     var trs=$("tbl").getElementsByTagName("tr"); for(var z=0;z<trs.length;z++){ trs[z].className=trs[z].className.replace(/\s*\bsel\b/g,""); }
-    n.className+=" sel"; };
+    n.className+=" sel";
+    if(evx) openInEventViewer(rows[ix]); };
 
   loadToolkitIoc();
   trace("init: wiring done"); checkElevation(); updateLiveWarn(); trace("elevated="+ELEVATED);
@@ -1543,6 +1564,7 @@ window.onload=function(){ trace("onload"); try{ init(); }catch(e){ trace("init t
     <h3>Exploring</h3>
     <ul>
       <li>Click a row for every field plus pivots: open the session, the session's events, a <b>logon story</b> (&plusmn;30 min of events sharing the user, IP or host), or timeline / sessions for that user, IP or host.</li>
+      <li>On the Timeline, click an <b>EventId</b> (or <b>Open in Event Viewer</b> on the detail card) to open the source <code>.evtx</code> in Windows Event Viewer filtered to that one record &mdash; the raw event, as Windows renders it. Live-log results open the live channel. The evidence must still be at the path it was processed from.</li>
       <li><b>IOCs&hellip;</b> (plus the toolkit <code>IOC.txt</code> next to this app) highlights matching rows; <b>IOC hits only</b> filters to them. <b>Export view &rarr; CSV</b> writes the full filtered set; <b>Copy for case notes</b> formats lines for a report.</li>
       <li><b>Known hosts&hellip;</b> maps IP addresses to host names (typed, pasted, loaded from a file, or accepted from names the logs resolved). The names appear next to the IPs everywhere and are searchable; exports keep the logged values. Saved with the results as <code>knownhosts.csv</code>.</li>
       <li>The <b>date window</b> is one setting: the engine window in the control panel and the from / to filter above the tables always match. The filter applies at once; the engine window applies on the next <b>Process</b>.</li>

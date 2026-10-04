@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2 — 2026-10-04
+
+### Added
+- **Open an event in Event Viewer**: on the HTA Timeline, clicking an EventId (or *Open in Event
+  Viewer* on the detail card) opens the source `.evtx` in Windows Event Viewer already filtered to
+  that one record (`eventvwr /l:<file> /f:"*[System[(EventRecordID=n)]]"`); live-log results open
+  the live channel with `/c:`. Launched with ShellExecute so `%` in Velociraptor paths is not
+  expanded; the app reports when the source file is no longer at its processed path.
+
 ## 0.2.1 — 2026-10-03
 
 Fixes from checking the HTA display of a real workstation collection against the raw EVTX (Get-WinEvent ground truth).
