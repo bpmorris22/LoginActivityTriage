@@ -131,7 +131,7 @@ public static class CsvExporter
 
     public static readonly IReadOnlyList<CsvColumn<UserPivot>> UserPivotColumns = new CsvColumn<UserPivot>[]
     {
-        new("User", p => p.User), new("SystemAccount", p => p.IsSystemAccount ? "Yes" : null),
+        new("User", p => p.User), new("Sid", p => p.Sid), new("SystemAccount", p => p.IsSystemAccount ? "Yes" : null),
         new("FirstSeen", p => Ts(p.FirstSeen)), new("LastSeen", p => Ts(p.LastSeen)),
         new("HostCount", p => Int(p.HostCount)), new("SourceIpCount", p => Int(p.SourceIpCount)),
         new("Successful", p => Int(p.Successful)), new("Failed", p => Int(p.Failed)), new("RdpInbound", p => Int(p.Rdp)),

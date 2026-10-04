@@ -132,6 +132,7 @@
   .khbad input.txt{border-color:#f85149}
   #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:160px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px;width:100%;box-sizing:border-box}
   .hide{display:none}
+  .vtip{cursor:help;border-bottom:1px dotted #6e7681}
   .lnk{cursor:pointer;color:#58a6ff}
   .lnk:hover{text-decoration:underline}
   .sep{display:inline-block;width:1px;height:18px;background:#30363d;margin:0 6px;vertical-align:middle}
@@ -284,7 +285,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.3.1";
+var APP_VERSION = "0.3.2";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -317,7 +318,7 @@ var VIEWS = {
               sort:["Start",1], time:"Start", host:"Host", tech:"Technique" },
   timeline: { ds:"events", cols:["Timestamp","Hostname","EventId","EventType","Technique","Result","User","Domain","SourceIp","Workstation","LogonType","AuthPackage","LogonId","SessionRef","Process","CommandLine","Details"],
               sort:["Timestamp",1], time:"Timestamp", host:"Hostname", tech:"Technique" },
-  users:    { ds:"users", cols:null, sort:["SuspicionScore",-1], time:"FirstSeen" },
+  users:    { ds:"users", cols:null, hide:["Sid"], sort:["SuspicionScore",-1], time:"FirstSeen" },   // Sid: detail card, search and export only
   ips:      { ds:"ips", cols:null, sort:["SuspicionScore",-1], time:"FirstSeen" },
   hosts:    { ds:"hosts", cols:null, sort:["RemoteExec",-1], time:"FirstSeen", host:"Host" },
   remotes:  { ds:"remotes", cols:null, sort:["Connections",-1], time:"FirstSeen", host:"FromHosts" },
@@ -489,16 +490,21 @@ function checkEngine(){
     $("engpill").className="pill bad"; $("engpill").innerHTML="engine: not found";
     $("exeline").innerHTML="Engine <b>"+ENGINE_EXE+"</b> not found next to this app, in .\\bin, in the repo build output or C:\\Tools\\LoginActivityTriage. "+
       "Use <b>Download engine</b>, or copy the exe next to this .hta.";
-    showEl("getBtn", true);
+    $("getBtn").innerHTML="Download engine"; showEl("getBtn", true);
     return false;
   }
   var r=runBat(['set DOTNET_ROLL_FORWARD=Major','"'+batEsc(EXE)+'" --version > "__LOG__" 2>&1'], false);
-  var m=String(r.log).match(/LoginActivityTriageCli\s+([0-9][0-9.]*)/);
-  if(m){ ENGINE_VER=m[1]; $("engpill").className="pill ok"; $("engpill").innerHTML="engine v"+ENGINE_VER; $("engpill").title=EXE; }
+  var m=String(r.log).match(/LoginActivityTriageCli\s+([0-9][0-9.]*)/), old=false;
+  if(m){ ENGINE_VER=m[1]; $("engpill").className="pill ok"; $("engpill").innerHTML="engine v"+ENGINE_VER; $("engpill").title=EXE;
+    // App and engine are released together with one version: an older engine lacks that release's fixes and columns.
+    old=selfVerNewer(APP_VERSION, ENGINE_VER);
+    if(old){ $("engpill").className="pill bad"; $("engpill").innerHTML="engine v"+esc(ENGINE_VER)+" &middot; older than app";
+      $("engpill").title="This engine is older than the app (v"+APP_VERSION+"): its results miss the fixes and columns of newer releases. Use Update engine, or put the matching "+ENGINE_EXE+" next to this .hta. "+EXE;
+      appendLog("Engine v"+ENGINE_VER+" at "+EXE+" is older than this app (v"+APP_VERSION+") - use Update engine for the matching release."); } }
   else { $("engpill").className="pill bad"; $("engpill").innerHTML="engine: will not start";
     appendLog("Engine at "+EXE+" did not report a version. It needs the .NET 8 (or newer) runtime:\n"+r.log); showLog(); }
   $("exeline").innerHTML="Engine: <span class='mono'>"+esc(EXE)+"</span>";
-  showEl("getBtn", false);
+  $("getBtn").innerHTML=old?"Update engine":"Download engine"; showEl("getBtn", old);
   return !!m;
 }
 function downloadEngine(){
@@ -921,9 +927,58 @@ function sortRows(view, d, rows){
     return r*st.dir;
   });
 }
-function colsOf(view){ var V=VIEWS[view], d=ds(V.ds); if(V.cols){ var c=[]; for(var i=0;i<V.cols.length;i++) if(V.cols[i] in d.idx) c.push(V.cols[i]); return c; } return d.head.slice(0); }
+function colsOf(view){ var V=VIEWS[view], d=ds(V.ds), c=[], i; if(V.cols){ for(i=0;i<V.cols.length;i++) if(V.cols[i] in d.idx) c.push(V.cols[i]); return c; }
+  for(i=0;i<d.head.length;i++){ var h=trimStr(d.head[i]), hid=false; for(var j=0;V.hide && j<V.hide.length;j++) if(V.hide[j]===h) hid=true; if(!hid) c.push(d.head[i]); }
+  return c; }
 function techChip(t,dir){ if(!t) return ""; var cls=(dir==="Outbound")?"tq out":(t==="RDP"?"tq rdp":"tq"); return '<span class="'+cls+'">'+esc(t)+(dir==="Outbound"?" &rarr;":"")+'</span>'; }
 var LOGON_TYPES = { 2:"console", 3:"network", 4:"batch", 5:"service", 7:"unlock", 8:"cleartext", 9:"new creds", 10:"RDP", 11:"cached", 12:"cached RDP", 13:"cached unlock" };
+/* Tooltips: the Timeline's column headings, and logon type / authentication package values (in every table). */
+var COLTIPS = { timeline: {
+  Timestamp:"When the event was logged, in UTC (ISO-8601).",
+  Hostname:"The computer whose log recorded the event - where it happened.",
+  EventId:"Windows event ID. Click it to open this record in Event Viewer, filtered to the one event.",
+  EventType:"What the event means (the engine's name for the event ID).",
+  Technique:"The activity (logon, logoff, disconnect, boot...) and the remote technique the engine attributed the event to (RDP, PsExec, WinRM, WMI...). An arrow marks outbound activity.",
+  Result:"Success or Failure, for events that report an outcome.",
+  User:"The account the event is about: the account that logged on, whose credentials were used (4648), that was added to a group, or that created the service / task.",
+  Domain:"That account's domain - or the computer name, for a local account.",
+  SourceIp:"Network address of the remote client. For a network or RDP logon: the machine the connection came FROM. Blank for local activity.",
+  Workstation:"Workstation name logged with the event. For network logons usually the client's own name (as the client reports it); for RDP (type 10) logons Windows logs this computer's own name - use SourceIp for the client.",
+  LogonType:"How the account logged on (4624 / 4625 / 4634). Hover a value for its meaning: 2 console, 3 network, 4 scheduled task, 5 service, 10 RDP...",
+  AuthPackage:"Authentication package that handled the logon: Kerberos, NTLM, or Negotiate (Kerberos when possible, else NTLM). Hover a value for details.",
+  LogonId:"Logon session ID (hex). Events with the same ID on the same host belong to one logon session, from logon to logoff.",
+  SessionRef:"Number of the remote session (Remote sessions tab) this event was stitched into.",
+  Process:"Process involved: the program that performed the logon or used the credentials, or the new process (4688 / Sysmon 1).",
+  CommandLine:"Command line of the process, service or scheduled task, when it was logged.",
+  Details:"Event specifics the engine extracted: service file, group, share, failure reason, privileges..." } };
+var LOGON_TYPE_TIPS = {
+  "0":"0 = System: used by the operating system itself at startup.",
+  "2":"2 = Interactive: at the console - keyboard, KVM or VM console (also runas).",
+  "3":"3 = Network: access over the network - file shares, PsExec, WMI, WinRM, RPC. No reusable credentials are left on this machine.",
+  "4":"4 = Batch: a scheduled task ran under this account.",
+  "5":"5 = Service: a service started under this account.",
+  "7":"7 = Unlock: the workstation was unlocked.",
+  "8":"8 = NetworkCleartext: network logon with the password sent to this machine in clear text (IIS basic authentication, some WinRM / PowerShell setups).",
+  "9":"9 = NewCredentials: runas /netonly - the local identity stays the same and the new credentials are used for outbound network connections. Also produced by pass-the-hash tools.",
+  "10":"10 = RemoteInteractive: Remote Desktop / Terminal Services / Remote Assistance logon.",
+  "11":"11 = CachedInteractive: console logon with cached domain credentials (no domain controller was reached).",
+  "12":"12 = CachedRemoteInteractive: RDP logon with cached credentials (also used for Microsoft / Entra ID account sign-ins).",
+  "13":"13 = CachedUnlock: unlock with cached credentials." };
+var AUTH_TIPS = {
+  "kerberos":"Kerberos: domain authentication with tickets issued by a domain controller.",
+  "ntlm":"NTLM: challenge-response authentication. Used for local accounts, connections by IP address, workgroups, or when Kerberos is unavailable. A local account logging on over the network with NTLM is typical of lateral movement and pass-the-hash.",
+  "negotiate":"Negotiate (SPNEGO): chooses Kerberos when it can, otherwise NTLM. Typical for interactive and RDP logons.",
+  "microsoft_authentication_package_v1_0":"MICROSOFT_AUTHENTICATION_PACKAGE_V1_0 (MSV1_0): the NTLM / local-account package - credential validation against the local account database or a domain controller.",
+  "ntlm v1":"NTLM V1: legacy NTLM - weak and crackable; should not be in use.",
+  "ntlm v2":"NTLM V2: current NTLM.",
+  "cloudap":"CloudAP: Microsoft Entra ID (Azure AD) or Microsoft account sign-in.",
+  "schannel":"Schannel: TLS client-certificate authentication.",
+  "pku2u":"PKU2U: peer-to-peer certificate authentication between machines with no common domain (e.g. Entra-joined devices over RDP).",
+  "wdigest":"WDigest: HTTP digest authentication." };
+function valueTip(col,v){ v=trimStr(v); if(!v) return "";
+  if(col==="LogonType") return LOGON_TYPE_TIPS[v]||"";
+  if(col==="AuthPackage") return AUTH_TIPS[v.toLowerCase()]||"";
+  return ""; }
 /* Session / power meaning of a timeline row: the engine's Activity column, or - for results from
    an engine without it - derived from the Security / LSM event id (power events need a new run). */
 function activityOf(d,row){
@@ -959,6 +1014,7 @@ function cellHtml(view,d,row,col){
     if(es) return '<span class="lnk" data-evx="1" title="'+esc("Open in Event Viewer, filtered to this event (record "+es.rec+" of "+es.label+")")+'">'+esc(v)+'</span>'; }
   if(/^(Timestamp|Start|End|FirstSeen|LastSeen)$/.test(col)) return esc(fmtTs(v));
   if(col==="Commands"||col==="CommandLine"||col==="Details"||col==="Description"||col==="Detail") return '<span title="'+esc(khText(v))+'">'+khHtml(v.length>160?v.substring(0,160)+"...":v, v)+'</span>';
+  var vt=valueTip(col,v); if(vt) return '<span class="vtip" title="'+esc(vt)+'">'+esc(v)+'</span>';
   return khHtml(v);
 }
 function render(){
@@ -969,9 +1025,10 @@ function render(){
   var d=ds(V.ds), rows=filteredRows(view), cols=colsOf(view), st=SORT[view]||{};
   window.__rows=rows; window.__d=d;
   var h=['<thead><tr>'];
-  for(var c=0;c<cols.length;c++){ var on=(st.col===cols[c]), cn=esc(cols[c]);
+  var ctips=COLTIPS[view]||{};
+  for(var c=0;c<cols.length;c++){ var on=(st.col===cols[c]), cn=esc(cols[c]), ct=ctips[trimStr(cols[c])];
     var tip=on?"Sorted "+(st.dir>0?"ascending":"descending")+" - click to reverse":"Sort by "+cols[c];
-    h.push('<th data-sort="'+cn+'"'+(on?' class="sorted"':'')+'>'+cn+'<button type="button" class="sbtn'+(on?' on':'')+'" data-sort="'+cn+'" title="'+esc(tip)+'">'+
+    h.push('<th data-sort="'+cn+'"'+(on?' class="sorted"':'')+(ct?' title="'+esc(ct)+'"':'')+'>'+cn+'<button type="button" class="sbtn'+(on?' on':'')+'" data-sort="'+cn+'" title="'+esc(tip)+'">'+
       (on?(st.dir>0?"&#9650;":"&#9660;"):"&#8597;")+'</button></th>'); }
   h.push('</tr></thead><tbody>');
   var lim=Math.min(rows.length, MAXROWS);

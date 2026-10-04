@@ -28,6 +28,9 @@ public sealed class SourceIpPivot
 public sealed class UserPivot
 {
     public string User { get; init; } = "";
+    /// <summary>The account's SID(s) as logged, most frequent first ("; "-separated; several when a
+    /// bare name covers accounts of different hosts). The NULL SID of failed logons is left out.</summary>
+    public string? Sid { get; init; }
     /// <summary>Machine, SYSTEM / service, DWM / UMFD or anonymous account (scored 0).</summary>
     public bool IsSystemAccount { get; init; }
     public DateTimeOffset FirstSeen { get; init; }
@@ -220,6 +223,7 @@ public static class PivotBuilder
                 return new UserPivot
                 {
                     User = user,
+                    Sid = Top(g, e => e.Sid is null || e.Sid.Trim() == "S-1-0-0" ? null : e.Sid.Trim()),
                     IsSystemAccount = system,
                     FirstSeen = all.Min(e => e.Timestamp),
                     LastSeen = all.Max(e => e.Timestamp),

@@ -127,7 +127,9 @@ public static class NoiseFilter
 
 /// <summary>
 /// Fills in the account name for events that carry only a SID (7045 service installs, WinRM 91,
-/// PowerShell events) from other events on the same host that pair that SID with a name.
+/// PowerShell events) from other events that pair that SID with a name. Group-member events
+/// (4728 / 4732 / 4756) for a local account log no member name (MemberName "-"), so the member
+/// is named by its SID until another event (4720, 4624...) names it.
 /// </summary>
 public static class SidResolver
 {
@@ -144,13 +146,21 @@ public static class SidResolver
         var resolved = 0;
         foreach (var e in list)
         {
-            if (e.TargetUserName is not null || e.Sid is null || !names.TryGetValue(e.Sid, out var n)) continue;
+            if (e.Sid is null || !names.TryGetValue(e.Sid, out var n)) continue;
+            var sidNamed = IsSidNamed(e);
+            if (e.TargetUserName is not null && !sidNamed) continue;
             e.TargetUserName = n.User;
-            e.TargetDomain ??= n.Domain;
+            // Beside a member SID the domain logged is the GROUP's (Builtin...), not the account's.
+            e.TargetDomain = sidNamed ? n.Domain : e.TargetDomain ?? n.Domain;
             resolved++;
         }
         return resolved;
     }
+
+    /// <summary>An account known only by its SID: the user field holds the event's own SID.</summary>
+    public static bool IsSidNamed(NormalizedEvent e) =>
+        e.TargetUserName is not null && e.Sid is not null &&
+        string.Equals(e.TargetUserName.Trim(), e.Sid.Trim(), StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>Each host's UTC offset, from the most recent System 6013 event in its logs.</summary>

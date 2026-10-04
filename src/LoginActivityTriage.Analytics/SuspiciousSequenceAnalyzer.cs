@@ -651,11 +651,14 @@ public sealed class SuspiciousSequenceAnalyzer
             var newAccount = created.FirstOrDefault(c =>
                 (c.Sid is not null && c.Sid == e.Sid || UserKey.Same(c.TargetUserName, e.TargetUserName)) &&
                 e.Timestamp >= c.Timestamp && e.Timestamp - c.Timestamp <= TimeSpan.FromDays(1));
+            // The member's SID stays in the text once a name is resolved for it (local members log only the SID).
+            var member = e.TargetUserName is null ? e.Sid
+                : e.Sid is null || SidResolver.IsSidNamed(e) ? e.TargetUserName : $"{e.TargetUserName} ({e.Sid})";
             yield return new Finding
             {
                 Severity = newAccount is not null ? FindingSeverity.Critical : FindingSeverity.High,
                 RuleName = newAccount is not null ? "New account added to privileged group" : "Member added to privileged group",
-                Description = $"{e.TargetUserName ?? e.Sid} added to {e.GroupName} on {e.Hostname} by {e.SubjectDomain}\\{e.SubjectUserName}" +
+                Description = $"{member} added to {e.GroupName} on {e.Hostname} by {e.SubjectDomain}\\{e.SubjectUserName}" +
                               (newAccount is null ? "" : $" ({(e.Timestamp - newAccount.Timestamp).TotalMinutes:0} min after the account was created)"),
                 Timestamp = e.Timestamp,
                 User = e.TargetUserName,

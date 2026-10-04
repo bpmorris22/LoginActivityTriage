@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.2 — 2026-10-04
+
+### Fixed
+- **Group-membership events named a local account by its SID** even when the logs name it.
+  4728 / 4732 / 4756 for a local account log `MemberName` "-" and only the `MemberSid`, so the
+  event, the Users row and the "New account added to privileged group" finding showed
+  `S-1-5-21-...-1003` although the account's 4720 creation and its 4624 logons pair that SID with
+  its name. The SID resolver now names such members from those events (with the account's own
+  domain, not the group's), and the finding keeps the SID beside the name:
+  `svc_report (S-1-5-21-...-1003) added to Administrators`. A member no event names stays listed by
+  its SID.
+
+### Added
+- **Sid in the Users pivot**: `users.csv` has a `Sid` column (the account's SIDs as logged, most
+  frequent first; the NULL SID of failed logons is left out). The HTA shows it on the Users detail
+  card, includes it in search and *Export view → CSV*, and keeps it out of the table.
+- **Engine older than app**: the HTA flags an engine from an older release (red engine pill,
+  "older than app") and offers **Update engine** (latest GitHub release). The self-update replaces
+  only the `.hta`, so an old engine could otherwise go unnoticed and silently miss a release's
+  engine fixes.
+- **Tooltips**: every Timeline column heading explains what the column holds (e.g. SourceIp is the
+  remote client - for an RDP logon the machine the connection came from - and the Workstation of a
+  type 10 logon is the server's own name). LogonType values (0-13) and AuthPackage values
+  (Kerberos, NTLM, Negotiate, MSV1_0, NTLM V1/V2, CloudAP...) explain themselves on hover, in the
+  Timeline and the Remote sessions table.
+
 ## 0.3.1 — 2026-10-04
 
 ### Fixed
