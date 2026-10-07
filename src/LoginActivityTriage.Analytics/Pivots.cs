@@ -114,6 +114,26 @@ public sealed class RemoteHostPivot
 }
 
 /// <summary>
+/// An IP address and a name the logs tie to it (ipnames.csv). <see cref="Kind"/> "client-reported":
+/// the workstation name a client supplied at logon from that address (4624 / 4625 WorkstationName,
+/// 4778 / 4779 ClientName) - spoofable, and never the logging host's own name, which RDP under NLA
+/// writes into its 4624 type 10. "self": the logging host's own address - a network logon (4624
+/// type 3) whose client named itself as this host, or a 4648 hand-off whose target is this host.
+/// </summary>
+public sealed class IpNamePivot
+{
+    public string Ip { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Kind { get; init; } = "";
+    /// <summary>Collected hosts whose logs recorded it ("; " separated).</summary>
+    public string? Hosts { get; init; }
+    public int Count { get; init; }
+    public DateTimeOffset FirstSeen { get; init; }
+    public DateTimeOffset LastSeen { get; init; }
+    public string? EventIds { get; init; }
+}
+
+/// <summary>
 /// Builds the pivot projections (and a simple suspicion score) from events.
 /// Counting rules: "Successful" counts logons (<see cref="NormalizedEvent.CountsAsLogonSuccess"/>),
 /// "Failed" counts authentication failures, "Rdp" counts INBOUND RDP evidence only, "RemoteExec"
@@ -334,6 +354,52 @@ public static class PivotBuilder
                 };
             })
             .OrderByDescending(p => p.Connections).ThenByDescending(p => p.ExplicitCreds).ThenBy(p => p.RemoteHost);
+    }
+
+    public const string ClientReported = "client-reported";
+    public const string Self = "self";
+
+    /// <summary>IP address → name pairs recorded in the logs (see <see cref="IpNamePivot"/>).</summary>
+    public static IEnumerable<IpNamePivot> ByIpName(IEnumerable<NormalizedEvent> events)
+    {
+        static bool Usable(string? ip) =>
+            IpUtil.IsIp(ip) && !IpUtil.IsLocalOrBlank(ip) &&
+            !(System.Net.IPAddress.TryParse(ip, out var a) && System.Net.IPAddress.IsLoopback(a)); // 127.0.0.2 = RDP tunnels
+        static string? Clean(string? name) =>
+            string.IsNullOrWhiteSpace(name) || name.Trim() is "-" || name.Trim().Equals("Unknown", StringComparison.OrdinalIgnoreCase) ||
+            IpUtil.IsIp(name.Trim()) ? null : HostKey.Of(name);
+
+        var pairs = new List<(string Ip, string Name, string Kind, NormalizedEvent E)>();
+        foreach (var e in events)
+        {
+            if (!Usable(e.SourceIp)) continue;
+            var ip = e.SourceIp!.Trim();
+            if (e.EventId is 4624 or 4625 or 4778 or 4779)
+            {
+                var name = Clean(e.WorkstationName);
+                if (name is null || name.Length == 0) continue;
+                if (!HostKey.Same(name, e.Hostname)) pairs.Add((ip, name, ClientReported, e));
+                // The host's own name: only a network logon proves the address; RDP / interactive logons
+                // log the server's name with the CLIENT's address.
+                else if (e.EventId == 4624 && e.LogonType == 3) pairs.Add((ip, name, Self, e));
+            }
+            else if (e.EventId == 4648 && HostKey.Same(e.TargetServer, e.Hostname))
+                pairs.Add((ip, HostKey.Of(e.Hostname), Self, e));
+        }
+
+        return pairs.GroupBy(p => (p.Ip.ToLowerInvariant(), p.Name, p.Kind))
+            .Select(g => new IpNamePivot
+            {
+                Ip = g.First().Ip,
+                Name = g.Key.Item2,
+                Kind = g.Key.Kind,
+                Hosts = JoinOrNull(g.Select(p => HostKey.Of(p.E.Hostname)).Where(h => h.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase)),
+                Count = g.Count(),
+                FirstSeen = g.Min(p => p.E.Timestamp),
+                LastSeen = g.Max(p => p.E.Timestamp),
+                EventIds = string.Join(",", g.Select(p => p.E.EventId).Distinct().OrderBy(i => i)),
+            })
+            .OrderBy(p => p.Ip, StringComparer.OrdinalIgnoreCase).ThenByDescending(p => p.Count);
     }
 
     private static string? JoinOrNull(IEnumerable<string> values)

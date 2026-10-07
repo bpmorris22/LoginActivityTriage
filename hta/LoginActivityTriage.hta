@@ -27,6 +27,7 @@
     writes to <outDir>: events.csv timeline.csv (the triage subset the Timeline loads) sessions.csv findings.csv
                         users.csv (Sid column 0.3.2+) sourceips.csv hosts.csv
                         remotehosts.csv (0.2.1+; older results show "not found" on the Remote hosts tab)
+                        ipnames.csv (0.4.4+: IP -> client-reported name, and the host's own address; feeds Known hosts)
                         files.csv (SizeBytes + Sha256 of every source log 0.4.0+; the Event Viewer copy is checked against it)
                         summary.json run.log report-findings.html report-sessions.html
     Exit codes: 0 ok, 1 usage, 2 no EVTX found, 3 fatal, 4 no input could be read.
@@ -288,7 +289,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.4.3";
+var APP_VERSION = "0.4.4";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -310,7 +311,7 @@ var SELFTEST = null;                 // {dir, errors:[]} when launched with /sel
 var JSERRORS = [];
 
 var FILES = { findings:"findings.csv", sessions:"sessions.csv", events:"events.csv", users:"users.csv",
-              ips:"sourceips.csv", hosts:"hosts.csv", remotes:"remotehosts.csv", files:"files.csv" };
+              ips:"sourceips.csv", hosts:"hosts.csv", remotes:"remotehosts.csv", files:"files.csv", ipnames:"ipnames.csv" };
 
 /* Column sets per view (null = every column in the CSV). The engine CSVs carry more columns;
    everything appears in the detail pane and in exports. */
@@ -676,9 +677,9 @@ function processDone(log, outdir, input, secs, startedMs, prevStamp){
   if(!fresh){
     setStatus("The engine exited 0 but did not publish a new summary.json for this run ("+(stamp ? "the one present was generated "+fmtTs(stamp) : "none present")+") - see the log. "+prior, "err"); showLog(); return;
   }
-  loadResults(outdir);
+  KH_AUTO_FORCE=true; loadResults(outdir);
   writeRunInfo(outdir, input);
-  setStatus("Done in "+Math.round(secs)+"s - results loaded from "+outdir, "ok");
+  setStatus("Done in "+Math.round(secs)+"s - results loaded from "+outdir+(KH_AUTO_MSG?"; "+KH_AUTO_MSG:""), "ok");
 }
 function priorResultsNote(outdir){
   try{ if(!fileExists(outdir+"\\summary.json")) return "No results were written.";
@@ -695,7 +696,7 @@ function writeRunInfo(outdir, input){
     var d=new Date(); function p2(x){ return (x<10?"0":"")+x; }
     var iso=d.getUTCFullYear()+"-"+p2(d.getUTCMonth()+1)+"-"+p2(d.getUTCDate())+"T"+p2(d.getUTCHours())+":"+p2(d.getUTCMinutes())+":"+p2(d.getUTCSeconds());
     // The files this run actually published (the engine's set plus the app's own knownhosts.csv), not a fixed list.
-    var known=["events.csv","timeline.csv","sessions.csv","findings.csv","users.csv","sourceips.csv","hosts.csv","remotehosts.csv","files.csv",
+    var known=["events.csv","timeline.csv","sessions.csv","findings.csv","users.csv","sourceips.csv","hosts.csv","remotehosts.csv","ipnames.csv","files.csv",
                "summary.json","run.log","report-findings.html","report-sessions.html","knownhosts.csv"], files=[];
     for(var fi=0;fi<known.length;fi++) if(fileExists(parentDir(p)+"\\"+known[fi])) files.push(known[fi]);
     var ent={ app:APP_NAME, appVersion:APP_VERSION, engineVersion:ENGINE_VER, host:sanitHost($("hostName").value),
@@ -778,6 +779,8 @@ function loadResults(dir){ trace("loadResults "+dir);
     try{ SUMMARY=JSON.parse(readUtf8(dir+"\\summary.json")); }catch(e){ appendLog("summary.json unreadable: "+e.message); }
     ds("findings"); ds("sessions"); ds("users"); ds("ips"); ds("hosts"); ds("remotes"); ds("files");
     loadKnown(dir);
+    if(KH_AUTO_FORCE || !fileExists(dir+"\\knownhosts.csv")) khAutoSelf(); else KH_AUTO_MSG="";
+    KH_AUTO_FORCE=false;
     // The window these results were imported with becomes the date window (engine + view filter).
     if(SUMMARY && (SUMMARY.from || SUMMARY.to)){ syncDate("from", SUMMARY.from||"", true); syncDate("to", SUMMARY.to||"", true); }
     if(!HOST_TOUCHED || !trimStr($("hostName").value)){ var g=guessHost(dir+"\\"); if(g) $("hostName").value=sanitHost(g); }
@@ -1129,7 +1132,19 @@ function render(){
     subsetNote=" (triage timeline; "+nf(SUMMARY.eventsKept)+" in the full events.csv)";
   $("count").innerHTML=esc(nf(rows.length)+" of "+nf(d.rows.length)+" row(s)"+subsetNote)+maxRowsWarn(lim, rows.length)+dateHiddenNote(dateHidden);
   renderChips();
+  fitTable();
   if(SELFTEST && !SELFTEST.views[view]) SELFTEST.views[view]={ rows:rows.length, total:d.rows.length, drawn:$("tbl").getElementsByTagName("tr").length-1 };
+}
+/* The table scroller fills the window: with the results card scrolled to the top, its tabs, filters,
+   table and footnote take exactly the window height (the toolbar above wraps with the width, so this
+   is measured, not a fixed vh). */
+function fitTable(){
+  try{ var sc=$("tblScroll"), card=sc.parentNode, vh=document.documentElement.clientHeight||document.body.clientHeight;
+    if(!vh || !card.offsetHeight) return;
+    // Rectangles are in window pixels; #content is CSS-zoomed (font size buttons), so convert back.
+    var z=parseFloat($("content").style.zoom)||0.9, fr=$("foot").getBoundingClientRect();
+    var above=sc.getBoundingClientRect().top-card.getBoundingClientRect().top, below=(fr.bottom-fr.top)+30*z;
+    sc.style.maxHeight=Math.max(240, Math.floor((vh-above-below)/z))+"px"; }catch(e){}
 }
 /* Rows that match every other filter but fall outside the from / to dates (the overview counts ignore the dates). */
 function dateHiddenNote(n){ if(!(n>0)) return "";
@@ -1177,6 +1192,8 @@ function renderDetail(row){
   if(ip) h.push('<button class="btn" onclick="pinTo(\'sessions\',\'SourceIp\',\''+jsq(ip.split(";")[0])+'\')">Sessions from this IP</button>');
   h.push('</div>');
   $("detBody").innerHTML=h.join(""); showEl("detailCard",true);
+  // The table fills the window, so the card opens below it: bring it up (bottom-aligned) when it is out of sight.
+  try{ var dc=$("detailCard"), vh=document.documentElement.clientHeight; if(dc.getBoundingClientRect().top>vh-40) dc.scrollIntoView(false); }catch(es){}
   if(SELFTEST) SELFTEST.detail=(SELFTEST.detail||0)+1;
 }
 function gotoSession(sref){ F.pin={view:"sessions",col:"SessionRef",val:sref}; setView("sessions");
@@ -1251,19 +1268,25 @@ function khLoopback(ip){ ip=String(ip).toLowerCase(); return /^127\./.test(ip) |
    as a conflict with no add link; one that differs from the analyst's own label is never in "add all". */
 function khLearned(){
   var by={}, order=[], out=[], d, i, r, k, j;
-  function add(ip,nm,src,host,t1,t2){ ip=trimStr(ip); nm=trimStr(nm);
+  function add(ip,nm,src,host,t1,t2,cnt){ ip=trimStr(ip); nm=trimStr(nm);
     if(!isIpAddr(ip) || khLoopback(ip) || !nm || nm==="-" || isIpAddr(nm) || /^unknown$/i.test(nm)) return;
     // A client-supplied name equal to the logging host is not the client: RDP under NLA logs the
     // server's own name in the 4624 type 10 WorkstationName (results from engines before 0.4.3).
     if(host && hostKey(nm)===hostKey(host)) return;
     var key=ip.toLowerCase(), g=by[key]; if(!g){ g=by[key]={ ip:ip, names:{}, list:[] }; order.push(key); }
     var n=g.names[nm.toLowerCase()]; if(!n){ n=g.names[nm.toLowerCase()]={ name:nm, src:src, count:0, first:"", last:"" }; g.list.push(n); }
-    n.count++;
+    n.count+=(parseInt(cnt,10)||1);
     var ts=[String(t1||"").substring(0,10), String(t2||"").substring(0,10)];
     for(var q=0;q<2;q++) if(ts[q]){ if(!n.first||ts[q]<n.first) n.first=ts[q]; if(!n.last||ts[q]>n.last) n.last=ts[q]; } }
+  // ipnames.csv (engine 0.4.4+) holds every client-reported name per address, so the sessions are only
+  // read for outbound hand-offs then; older results fall back to the sessions' SourceHost.
+  var ipn=ds("ipnames");
+  if(!ipn.missing) for(i=0;i<ipn.rows.length;i++){ r=ipn.rows[i];
+    add(cell(ipn,r,"Ip"), cell(ipn,r,"Name"), cell(ipn,r,"Kind")==="self" ? "this host's own address (it authenticated to itself)" : "workstation name the client reported at logon (client-supplied)",
+        null, cell(ipn,r,"FirstSeen"), cell(ipn,r,"LastSeen"), cell(ipn,r,"Count")); }
   d=DATA.sessions; if(d) for(i=0;i<d.rows.length;i++){ r=d.rows[i];
     if(cell(d,r,"Direction")==="Outbound") add(cell(d,r,"TargetHost"), cell(d,r,"TargetHostName"), "target name from a 4648 credential hand-off", null, cell(d,r,"Start"));
-    else if(String(cell(d,r,"SourceIp")).indexOf(";")<0) add(cell(d,r,"SourceIp"), cell(d,r,"SourceHost"), "workstation name the client reported at logon (client-supplied)", cell(d,r,"Host"), cell(d,r,"Start")); }
+    else if(ipn.missing && String(cell(d,r,"SourceIp")).indexOf(";")<0) add(cell(d,r,"SourceIp"), cell(d,r,"SourceHost"), "workstation name the client reported at logon (client-supplied)", cell(d,r,"Host"), cell(d,r,"Start")); }
   d=DATA.remotes; if(d && !d.missing) for(i=0;i<d.rows.length;i++){ r=d.rows[i]; var nms=String(cell(d,r,"Name")).split(";");
     for(j=0;j<nms.length;j++) add(cell(d,r,"RemoteHost"), nms[j], "target name from a 4648 credential hand-off", null, cell(d,r,"FirstSeen"), cell(d,r,"LastSeen")); }
   for(i=0;i<order.length;i++){ var g=by[order[i]], cur=KNOWN.map[order[i]], n, seenTxt;
@@ -1348,12 +1371,43 @@ function khSave(){
     if(!isIpAddr(e.ip) || !e.name){ e.bad=true; bad++; } else ok.push(e); }
   if(bad){ khRenderTable(keep); $("khInfo").innerHTML='<span class="err">'+bad+' row(s) need a valid IP address and a host name</span>'; return; }
   khSet(ok);
-  var p=RESDIR+"\\knownhosts.csv", list=khList(), L=["Ip,Name,Note"], saved=false;
-  for(i=0;i<list.length;i++) L.push(csvEsc(list[i].ip)+","+csvEsc(list[i].name)+","+csvEsc(list[i].note));
-  try{ if(list.length || fileExists(p)){ writeUtf8(p, L.join("\r\n")+"\r\n", true); saved=true; } }
+  var p=RESDIR+"\\knownhosts.csv", saved=false;
+  try{ saved=khWrite(); }
   catch(e){ setStatus("Known hosts applied, but "+p+" could not be written: "+e.message,"err"); }
   closeKnown(); khApply();
   if(saved) setStatus(KNOWN.n+" known host(s) applied and saved to "+p,"ok");
+}
+/* Writes KNOWN to knownhosts.csv in the results folder (throws on failure); false when there was nothing to write. */
+function khWrite(){
+  var p=RESDIR+"\\knownhosts.csv", list=khList(), L=["Ip,Name,Note"];
+  for(var i=0;i<list.length;i++) L.push(csvEsc(list[i].ip)+","+csvEsc(list[i].name)+","+csvEsc(list[i].note));
+  if(!list.length && !fileExists(p)) return false;
+  writeUtf8(p, L.join("\r\n")+"\r\n", true); return true;
+}
+/* The scanned host's own address(es) from ipnames.csv (engine 0.4.4+: it authenticated to itself over
+   the network) go into Known hosts on their own: after every Process, and on loading results that have
+   no knownhosts.csv yet (so a row the analyst deleted stays deleted until the next Process). An address
+   that is already labelled, or that also reported another client name, is left for the dialog. */
+var KH_AUTO_FORCE=false, KH_AUTO_MSG="";
+function khAutoSelf(){
+  KH_AUTO_MSG=""; var d=ds("ipnames"); if(d.missing) return;
+  var other={}, self=[], i, r, ip;
+  for(i=0;i<d.rows.length;i++){ r=d.rows[i]; ip=trimStr(cell(d,r,"Ip")).toLowerCase();
+    if(cell(d,r,"Kind")==="self") self.push(r); else other[ip]=true; }
+  if(!self.length){ appendLog("Known hosts: the logs do not show the scanned host's own IP address (it never authenticated to itself over the network) - add it by hand if you know it."); return; }
+  var list=khList(), added=[], skipped=[];
+  for(i=0;i<self.length;i++){ r=self[i]; ip=trimStr(cell(d,r,"Ip")); var nm=cell(d,r,"Name"), k=ip.toLowerCase();
+    if(!isIpAddr(ip) || !nm || KNOWN.map[k]) continue;
+    if(other[k]){ skipped.push(ip); continue; }
+    list.push({ ip:ip, name:nm, note:"auto: this host's own address (it authenticated to itself "+cell(d,r,"Count")+"x, "+
+      khRange({ first:String(cell(d,r,"FirstSeen")).substring(0,10), last:String(cell(d,r,"LastSeen")).substring(0,10) })+")" });
+    added.push(nm+" = "+ip); }
+  if(skipped.length) appendLog("Known hosts: not added automatically (the address also reported another client name - check in Known hosts): "+skipped.join(", "));
+  if(!added.length) return;
+  khSet(list);
+  try{ khWrite(); }catch(e){ appendLog("knownhosts.csv not written: "+e.message); }
+  KH_AUTO_MSG="known hosts + "+added.join(", ");
+  appendLog("Known hosts: added the scanned host's own address - "+added.join(", "));
 }
 /* Re-draws everything that shows IPs. */
 function khApply(){ if(!RESDIR) return; fillHostSel(VIEW); F.hostKeys=hostKeysFor(F.host); renderOverview(); render();
@@ -1620,8 +1674,9 @@ function init(){
     // The popups (IOCs, Known hosts, Help) sit outside #content: give their cards the same text size.
     var cards=document.querySelectorAll(".modal .mcard"); for(var ci=0;ci<cards.length;ci++) cards[ci].style.zoom=zoom; }
   applyZoom();
-  $("fup").onclick=function(){ zoom=Math.min(zoom+0.15,2.5); applyZoom(); };
-  $("fdown").onclick=function(){ zoom=Math.max(zoom-0.15,0.6); applyZoom(); };
+  window.onresize=function(){ fitTable(); };
+  $("fup").onclick=function(){ zoom=Math.min(zoom+0.15,2.5); applyZoom(); fitTable(); };
+  $("fdown").onclick=function(){ zoom=Math.max(zoom-0.15,0.6); applyZoom(); fitTable(); };
 
   $("inPath").value="";
   $("inMode").onchange=function(){ var live=this.value==="live"; $("inPath").disabled=live; if(live) hostGuessFrom("live"); updateLiveWarn(); };

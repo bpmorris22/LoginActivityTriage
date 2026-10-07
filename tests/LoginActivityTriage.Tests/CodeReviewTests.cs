@@ -173,6 +173,35 @@ public class CodeReviewTests
         Assert.Equal(expected, s.SourceHost);
     }
 
+    [Fact]
+    public void IpNames_KeepClientNamesAndSelfAddresses_DropTheNlaServerName()
+    {
+        NormalizedEvent L(int id, int sec, string ip, string? ws, int? type = null)
+        {
+            var e = E(id, sec, "FS01.contoso.local"); e.SourceIp = ip; e.WorkstationName = ws; e.LogonType = type; return e;
+        }
+        var self4648 = E(4648, 9, "FS01.contoso.local"); self4648.SourceIp = "10.10.20.5"; self4648.TargetServer = "fs01.contoso.local";
+        var rows = PivotBuilder.ByIpName(new[]
+        {
+            L(4624, 1, "10.10.20.40", "FS01", 10),      // NLA type 10: the server's own name with the client's address -> dropped
+            L(4624, 2, "10.10.20.40", "WS-ANA7", 3),    // NLA pre-auth network logon: the client's name
+            L(4625, 3, "10.10.20.40", "ws-ana7", 3),
+            L(4778, 4, "10.10.20.41", "Unknown"),       // dropped
+            L(4778, 5, "10.10.20.42", "LAPTOP-9"),
+            L(4624, 6, "127.0.0.2", "TUNNEL", 10),      // loopback (RDP tunnel) -> dropped
+            L(4624, 7, "10.10.20.5", "FS01", 3),        // the host authenticated to itself -> its own address
+            L(4624, 8, "10.10.20.43", "10.10.20.43", 3),// an address as the name -> dropped
+            self4648,
+        }).ToList();
+
+        Assert.Equal(3, rows.Count);
+        var ws = Assert.Single(rows, r => r.Ip == "10.10.20.40");
+        Assert.Equal(("WS-ANA7", PivotBuilder.ClientReported, 2, "4624,4625"), (ws.Name, ws.Kind, ws.Count, ws.EventIds));
+        Assert.Equal("LAPTOP-9", Assert.Single(rows, r => r.Ip == "10.10.20.42").Name);
+        var self = Assert.Single(rows, r => r.Ip == "10.10.20.5");
+        Assert.Equal(("FS01", PivotBuilder.Self, 2, "4624,4648", "FS01"), (self.Name, self.Kind, self.Count, self.EventIds, self.Hosts));
+    }
+
     // #7 -----------------------------------------------------------------------------------------
 
     private static string Share5145(string relative, string mask, string list, string keywords = "0x8020000000000000") =>

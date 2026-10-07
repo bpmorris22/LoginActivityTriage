@@ -174,6 +174,13 @@ public static class CsvExporter
         new("CredentialsUsed", p => p.CredentialsUsed),
     };
 
+    public static readonly IReadOnlyList<CsvColumn<IpNamePivot>> IpNameColumns = new CsvColumn<IpNamePivot>[]
+    {
+        new("Ip", p => p.Ip), new("Name", p => p.Name), new("Kind", p => p.Kind), new("Hosts", p => p.Hosts),
+        new("Count", p => Int(p.Count)), new("FirstSeen", p => Ts(p.FirstSeen)), new("LastSeen", p => Ts(p.LastSeen)),
+        new("EventIds", p => p.EventIds),
+    };
+
     public static readonly IReadOnlyList<CsvColumn<ImportedFileResult>> FileColumns = new CsvColumn<ImportedFileResult>[]
     {
         new("File", f => f.FilePath), new("Hostname", f => f.Hostname), new("LogSource", f => f.LogSource),

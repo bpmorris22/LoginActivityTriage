@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.4 — 2026-10-07
+
+### Added
+- **`ipnames.csv`**: every IP address → name pair the logs record, with counts, first / last seen
+  and event ids.
+  - `client-reported`: the workstation name a client supplied at logon (4624 / 4625
+    `WorkstationName`, 4778 / 4779 `ClientName`). This includes the NTLM network logon that
+    precedes each RDP connection under NLA. The logging host's own name, "Unknown", addresses and
+    loopback sources (127.0.0.2 RDP tunnels included) are left out.
+  - `self`: the host's own address, from a 4624 type 3 logon whose client named itself as this host,
+    or a 4648 whose target is this host.
+- **Known hosts → Learned from these logs** reads `ipnames.csv`, so names now come from the full event
+  set (network logons are not in the Timeline's triage subset). Results from older engines fall back
+  to the sessions as before.
+- **The scanned host's own address is added to Known hosts automatically** after every Process, and
+  when results without a `knownhosts.csv` are loaded, so a row you delete stays deleted until the next
+  Process. An address that is already labelled, or that also reported another client name, is left
+  for the dialog. The log says when the logs show no own address.
+
+### Changed
+- The results table fills the window: with the tabs scrolled to the top, the table reaches the bottom
+  of the window instead of stopping at 58 % of its height. It is recalculated on resize and with the
+  font-size buttons, and a row's detail card scrolls into view when it opens below the window.
+
 ## 0.4.3 — 2026-10-07
 
 ### Fixed

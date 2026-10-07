@@ -23,7 +23,7 @@ internal static class Program
     private static readonly string[] OutputFiles =
     {
         "events.csv", "timeline.csv", "sessions.csv", "findings.csv", "users.csv", "sourceips.csv", "hosts.csv",
-        "remotehosts.csv", "files.csv", "report-findings.html", "report-sessions.html", "summary.json",
+        "remotehosts.csv", "ipnames.csv", "files.csv", "report-findings.html", "report-sessions.html", "summary.json",
     };
 
     /// <summary>Results are written here and moved into the output folder only when the run succeeds.</summary>
@@ -218,6 +218,7 @@ internal static class Program
         CsvExporter.Write(Path.Combine(outDir, "sourceips.csv"), PivotBuilder.BySourceIp(events), CsvExporter.SourceIpPivotColumns);
         CsvExporter.Write(Path.Combine(outDir, "hosts.csv"), PivotBuilder.ByHost(events), CsvExporter.HostPivotColumns);
         CsvExporter.Write(Path.Combine(outDir, "remotehosts.csv"), PivotBuilder.ByRemoteHost(events, result.Sessions), CsvExporter.RemoteHostPivotColumns);
+        CsvExporter.Write(Path.Combine(outDir, "ipnames.csv"), PivotBuilder.ByIpName(events), CsvExporter.IpNameColumns);
         CsvExporter.Write(Path.Combine(outDir, "files.csv"), summary.Files, CsvExporter.FileColumns);
         if (o.Html)
         {
@@ -390,7 +391,7 @@ Options:
   -v, --version      Print the version.
 
 Outputs (UTF-8 CSV, all timestamps ISO-8601 UTC with Z):
-  events.csv  timeline.csv  sessions.csv  findings.csv  users.csv  sourceips.csv  hosts.csv  remotehosts.csv  files.csv
+  events.csv  timeline.csv  sessions.csv  findings.csv  users.csv  sourceips.csv  hosts.csv  remotehosts.csv  ipnames.csv  files.csv
   summary.json  run.log  report-findings.html  report-sessions.html
 
 Results are staged and published only when the run succeeds; on any failure the output

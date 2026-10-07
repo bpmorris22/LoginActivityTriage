@@ -111,6 +111,7 @@ Outputs (UTF-8 CSV, ISO-8601 UTC `…Z` timestamps, spreadsheet-formula values n
 | `findings.csv` | rule hits |
 | `users.csv` `sourceips.csv` `hosts.csv` | pivots with a heuristic suspicion score (users: `UsedOthersCreds` / `CredsUsedByOthers` for both sides of a 4648 hand-off; `RemoteAccessTool` separate from `RemoteExec`) |
 | `remotehosts.csv` | one row per destination the collected hosts connected to (outbound sessions, 4648 targets), address and resolved name merged |
+| `ipnames.csv` | IP → name pairs: client-reported workstation names (4624 / 4625 / 4778 / 4779) and each collected host's own address; feeds the HTA's Known hosts |
 | `files.csv`, `run.log`, `summary.json` | what was read, with the SHA-256 and size of every source log (chain of custody), duplicates / noise / unreadable counts, errors |
 | `report-findings.html`, `report-sessions.html` | self-contained reports |
 
