@@ -520,7 +520,7 @@ public sealed class RemoteSessionBuilder
             s.SourceIp = string.Join("; ", b.Members.Select(m => m.SourceIp)
                 .Where(i => !IpUtil.IsLocalOrBlank(i)).Distinct(StringComparer.OrdinalIgnoreCase));
             if (s.SourceIp.Length == 0) s.SourceIp = null;
-            s.SourceHost ??= b.Members.Select(m => m.WorkstationName).FirstOrDefault(w => w is not null);
+            s.SourceHost ??= ClientHostName(b.Members, null, s.Host);
             var reconnects = b.Members.Count(m => m.EventId is 25 or 4778);
             var disconnects = b.Members.Count(m => m.EventId is 24 or 4779);
             var admin = b.Members.Any(m => m.EventId == 4672);
@@ -771,7 +771,9 @@ public sealed class RemoteSessionBuilder
             User = user is null ? null : UserKey.Bare(user),
             Domain = domain,
             SourceIp = logon?.SourceIp ?? all.Select(m => m.SourceIp).FirstOrDefault(i => !IpUtil.IsLocalOrBlank(i)),
-            SourceHost = logon?.WorkstationName ?? all.Select(m => m.WorkstationName).FirstOrDefault(w => w is not null),
+            SourceHost = direction == "Inbound"
+                ? ClientHostName(all, logon, all.Select(m => m.Hostname).FirstOrDefault(h => h is not null))
+                : logon?.WorkstationName ?? all.Select(m => m.WorkstationName).FirstOrDefault(w => w is not null),
             LogonId = logon?.LogonId,
             LogonType = logon?.LogonType,
             AuthPackage = logon?.AuthenticationPackage,
@@ -782,6 +784,19 @@ public sealed class RemoteSessionBuilder
         s.Events.AddRange(all);
         return s;
     }
+
+    /// <summary>
+    /// The client's computer name for an inbound session: 4778 / 4779 ClientName first (the RDP
+    /// client reports it), then the logon's WorkstationName, then any member's. A name that is the
+    /// session host itself is never the client: RDP logons under NLA log the server's own name in the
+    /// 4624 type 10 WorkstationName field.
+    /// </summary>
+    private static string? ClientHostName(IReadOnlyList<NormalizedEvent> members, NormalizedEvent? logon, string? host) =>
+        members.Where(m => m.EventId is 4778 or 4779).Select(m => m.WorkstationName)
+            .Append(logon?.WorkstationName)
+            .Concat(members.Select(m => m.WorkstationName))
+            .FirstOrDefault(w => !string.IsNullOrWhiteSpace(w) && w != "-" &&
+                                 !w.Equals("Unknown", StringComparison.OrdinalIgnoreCase) && !HostKey.Same(w, host));
 
     private static string? LogonText(NormalizedEvent? logon) =>
         logon is null ? null

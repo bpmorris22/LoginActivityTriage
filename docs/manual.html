@@ -6,7 +6,7 @@
 <title>Login Activity Triage — Manual</title>
 <link rel="icon" type="image/svg+xml" href="images/app-icon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="images/app-icon-32.png">
-<meta name="description" content="User manual for Login Activity Triage 0.4.2: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
+<meta name="description" content="User manual for Login Activity Triage 0.4.3: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
 <style>
   :root{
     --bg:#ffffff; --panel:#f6f8fa; --text:#1f2328; --muted:#59636e; --line:#d1d9e0; --accent:#0969da;
@@ -67,7 +67,7 @@
 <div class="layout">
 <nav class="toc" aria-label="Contents">
   <div class="brand">Login Activity Triage</div>
-  <div class="ver">Manual &middot; version 0.4.2</div>
+  <div class="ver">Manual &middot; version 0.4.3</div>
   <ol>
     <li><a href="#overview">What it does</a></li>
     <li><a href="#install">Install &amp; requirements</a></li>
@@ -237,7 +237,7 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
   <img src="images/known-hosts.png" alt="Known hosts dialog with IP to name mappings and names learned from the logs">
   <figcaption>Known hosts: your own IP &rarr; name list, plus names the logs themselves resolved (accept with <em>add</em>).</figcaption>
 </figure>
-<p><strong>Known hosts (n)&hellip;</strong> maps IP addresses to host names. Type rows, <em>Paste list&hellip;</em> (CSV, tab-separated or hosts-file lines) or <em>Load file&hellip;</em>; <em>Learned from these logs</em> offers names the evidence resolved (a 4648 target server for an address, or the workstation name a client reported at logon &mdash; client-supplied, so treat with care).</p>
+<p><strong>Known hosts (n)&hellip;</strong> maps IP addresses to host names. Type rows, <em>Paste list&hellip;</em> (CSV, tab-separated or hosts-file lines) or <em>Load file&hellip;</em>; <em>Learned from these logs</em> offers names the evidence resolved (a 4648 target server for an address, or the workstation name a client reported at logon &mdash; client-supplied, so treat with care). Each address appears once with how often and when it was seen; one seen with different names is shown as a conflict to label by hand, a name equal to the logging host itself is never offered, and <em>add all</em> leaves out conflicts and changes to your own labels.</p>
 <ul>
   <li>Names appear as labels next to the IPs in every table, the detail card, the host filter, the overview and case notes, and they are searchable.</li>
   <li><strong>Display only</strong>: the engine CSVs and <em>Export view &rarr; CSV</em> keep the logged values.</li>
@@ -373,7 +373,7 @@ LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machin
 </table>
 
 <footer>
-  Login Activity Triage 0.4.2 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
+  Login Activity Triage 0.4.3 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
   <a href="https://github.com/bpmorris22/LoginActivityTriage">github.com/bpmorris22/LoginActivityTriage</a> &middot;
   see <code>CHANGELOG.md</code> for what changed in each version.
 </footer>

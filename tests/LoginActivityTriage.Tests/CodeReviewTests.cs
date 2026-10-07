@@ -153,6 +153,26 @@ public class CodeReviewTests
         Assert.Contains("logged off", s.Detail);
     }
 
+    [Theory]
+    [InlineData(true, "WS-ANALYST7")]
+    [InlineData(false, null)]
+    public void RdpSourceHost_IsNeverTheServerItself(bool withReconnect, string? expected)
+    {
+        // Under NLA the 4624 type 10 WorkstationName is the RDP server's own name; 4778 ClientName is the client.
+        NormalizedEvent Ev(int id, int sec, string? workstation = null)
+        {
+            var e = E(id, sec, "GE-3.contoso.local"); e.TargetUserName = "administrator"; e.LogonId = "0x2d57b";
+            e.SourceIp = "10.10.20.9"; e.WorkstationName = workstation;
+            if (id is 1149 or 4778 or 4779) e.Technique = RemoteTechnique.Rdp;
+            if (id == 4624) e.LogonType = 10;
+            return e;
+        }
+        var events = new List<NormalizedEvent> { Ev(1149, 0), Ev(4624, 1, "GE-3") };
+        if (withReconnect) { events.Add(Ev(4779, 60, "WS-ANALYST7")); events.Add(Ev(4778, 300, "WS-ANALYST7")); }
+        var s = Assert.Single(new RemoteSessionBuilder().Build(events));
+        Assert.Equal(expected, s.SourceHost);
+    }
+
     // #7 -----------------------------------------------------------------------------------------
 
     private static string Share5145(string relative, string mask, string list, string keywords = "0x8020000000000000") =>

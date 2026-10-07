@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.3 — 2026-10-07
+
+### Fixed
+- **Wrong client names for inbound RDP.** Under NLA, the 4624 type 10 `WorkstationName` is the RDP
+  server's own name, and the engine used it as the session's `SourceHost`, so every client looked like
+  the server itself. Sessions now take the 4778 / 4779 `ClientName` first and never use the session
+  host's own name (left empty when the logs name no client).
+- **Known hosts → Learned from these logs** offered those self-names (six client IPs all "learned" as
+  the server). It also listed an address once per name, so `add all` silently kept whichever came last,
+  and it offered loopback addresses. Now each address appears once with how often and when it was seen.
+  An address seen with different names (DHCP reuse, a spoofed or renamed client) is shown as a conflict
+  to label by hand. A name equal to the logging host is dropped, which also cleans results from older
+  engines. A suggestion that differs from your own label is marked, and `add all` leaves out
+  conflicts and changes to your labels.
+
 ## 0.4.2 — 2026-10-07
 
 ### Added

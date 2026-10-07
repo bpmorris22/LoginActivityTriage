@@ -288,7 +288,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.4.2";
+var APP_VERSION = "0.4.3";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -1245,20 +1245,39 @@ function loadKnown(dir){
   catch(e){ appendLog("knownhosts.csv unreadable: "+e.message); }
   khSet(list); if(KNOWN.n) appendLog("Known hosts: "+KNOWN.n+" mapping(s) from "+p);
 }
-/* IP -> name pairs the logs themselves recorded, offered in the dialog (never applied on their own). */
+function khLoopback(ip){ ip=String(ip).toLowerCase(); return /^127\./.test(ip) || ip==="0.0.0.0" || ip==="::1" || ip==="::"; }
+/* IP -> name pairs the logs themselves recorded, offered in the dialog (never applied on their own).
+   One entry per IP. An IP seen with different names (DHCP reuse, a spoofed or renamed client) is shown
+   as a conflict with no add link; one that differs from the analyst's own label is never in "add all". */
 function khLearned(){
-  var out=[], seen={}, d, i, r;
-  function add(ip,nm,src){ ip=trimStr(ip); nm=trimStr(nm);
-    if(!isIpAddr(ip) || !nm || nm==="-" || isIpAddr(nm)) return;
-    var cur=KNOWN.map[ip.toLowerCase()]; if(cur && cur.lname===nm.toLowerCase()) return;
-    var key=ip.toLowerCase()+"|"+nm.toLowerCase(); if(seen[key]) return; seen[key]=1; out.push({ ip:ip, name:nm, note:src }); }
+  var by={}, order=[], out=[], d, i, r, k, j;
+  function add(ip,nm,src,host,t1,t2){ ip=trimStr(ip); nm=trimStr(nm);
+    if(!isIpAddr(ip) || khLoopback(ip) || !nm || nm==="-" || isIpAddr(nm) || /^unknown$/i.test(nm)) return;
+    // A client-supplied name equal to the logging host is not the client: RDP under NLA logs the
+    // server's own name in the 4624 type 10 WorkstationName (results from engines before 0.4.3).
+    if(host && hostKey(nm)===hostKey(host)) return;
+    var key=ip.toLowerCase(), g=by[key]; if(!g){ g=by[key]={ ip:ip, names:{}, list:[] }; order.push(key); }
+    var n=g.names[nm.toLowerCase()]; if(!n){ n=g.names[nm.toLowerCase()]={ name:nm, src:src, count:0, first:"", last:"" }; g.list.push(n); }
+    n.count++;
+    var ts=[String(t1||"").substring(0,10), String(t2||"").substring(0,10)];
+    for(var q=0;q<2;q++) if(ts[q]){ if(!n.first||ts[q]<n.first) n.first=ts[q]; if(!n.last||ts[q]>n.last) n.last=ts[q]; } }
   d=DATA.sessions; if(d) for(i=0;i<d.rows.length;i++){ r=d.rows[i];
-    if(cell(d,r,"Direction")==="Outbound") add(cell(d,r,"TargetHost"), cell(d,r,"TargetHostName"), "learned: target name from a 4648 credential hand-off");
-    else if(String(cell(d,r,"SourceIp")).indexOf(";")<0) add(cell(d,r,"SourceIp"), cell(d,r,"SourceHost"), "learned: workstation name the client reported at logon (client-supplied)"); }
-  d=DATA.remotes; if(d && !d.missing) for(i=0;i<d.rows.length;i++){ r=d.rows[i];
-    add(cell(d,r,"RemoteHost"), String(cell(d,r,"Name")).split(";")[0], "learned: target name from a 4648 credential hand-off"); }
+    if(cell(d,r,"Direction")==="Outbound") add(cell(d,r,"TargetHost"), cell(d,r,"TargetHostName"), "target name from a 4648 credential hand-off", null, cell(d,r,"Start"));
+    else if(String(cell(d,r,"SourceIp")).indexOf(";")<0) add(cell(d,r,"SourceIp"), cell(d,r,"SourceHost"), "workstation name the client reported at logon (client-supplied)", cell(d,r,"Host"), cell(d,r,"Start")); }
+  d=DATA.remotes; if(d && !d.missing) for(i=0;i<d.rows.length;i++){ r=d.rows[i]; var nms=String(cell(d,r,"Name")).split(";");
+    for(j=0;j<nms.length;j++) add(cell(d,r,"RemoteHost"), nms[j], "target name from a 4648 credential hand-off", null, cell(d,r,"FirstSeen"), cell(d,r,"LastSeen")); }
+  for(i=0;i<order.length;i++){ var g=by[order[i]], cur=KNOWN.map[order[i]], n, seenTxt;
+    if(cur && g.names[cur.lname]) continue; // the analyst already labelled it with one of these names
+    if(g.list.length>1){ var parts=[];
+      for(j=0;j<g.list.length;j++) parts.push(g.list[j].name+" ("+g.list[j].count+"x, "+khRange(g.list[j])+")");
+      out.push({ ip:g.ip, name:"", note:"names differ: "+parts.join(", ")+" - DHCP reuse or a spoofed / renamed client; label it by hand", conflict:true });
+      continue; }
+    n=g.list[0];
+    out.push({ ip:g.ip, name:n.name, note:"learned: "+n.src+", seen "+n.count+"x, "+khRange(n), warn:cur ? "differs from your label "+cur.name : "" });
+  }
   return out;
 }
+function khRange(n){ return !n.first ? "no date" : (n.first===n.last ? n.first : n.first+" .. "+n.last); }
 var KH_LEARNED=[];
 function openKnown(){
   if(!RESDIR){ setStatus("Load results first - known hosts are saved with them","err"); return; }
@@ -1304,17 +1323,23 @@ function khAddPasted(){ var n=khMerge(khParse($("khPaste").value)); $("khPaste")
   $("khInfo").innerHTML=esc(n+" line(s) added - Save & apply to keep them"); }
 function khRenderLearned(){
   if(!KH_LEARNED.length){ $("khLearned").innerHTML='<div class="muted" style="font-size:12px">Nothing new - the logs resolved no other IP address to a name.</div>'; return; }
-  var h=['<table class="khgrid"><tbody>'];
+  var h=['<table class="khgrid"><tbody>'], bulk=khBulk().length;
   for(var i=0;i<KH_LEARNED.length;i++){ var e=KH_LEARNED[i];
-    h.push('<tr><td class="mono" style="width:24%">'+esc(e.ip)+'</td><td style="width:30%">'+esc(e.name)+'</td><td class="muted">'+esc(e.note)+'</td>'+
-           '<td style="width:40px"><span class="lnk" onclick="khAcceptLearned('+i+')">add</span></td></tr>'); }
+    h.push('<tr><td class="mono" style="width:24%">'+esc(e.ip)+'</td><td style="width:30%">'+(e.conflict?'<span class="err">?</span>':esc(e.name))+'</td><td class="muted">'+esc(e.note)+
+           (e.warn?' <span class="err">('+esc(e.warn)+')</span>':'')+'</td>'+
+           '<td style="width:40px">'+(e.conflict?'':'<span class="lnk" onclick="khAcceptLearned('+i+')">add</span>')+'</td></tr>'); }
   h.push('</tbody></table>');
-  if(KH_LEARNED.length>1) h.push('<span class="lnk" style="font-size:12px" onclick="khAcceptLearned(-1)">add all '+KH_LEARNED.length+'</span>');
+  if(bulk>1) h.push('<span class="lnk" style="font-size:12px" onclick="khAcceptLearned(-1)">add all '+bulk+'</span>'+
+                    (bulk<KH_LEARNED.length?' <span class="muted" style="font-size:12px">(conflicts and changes to your own labels are left out)</span>':''));
   $("khLearned").innerHTML=h.join("");
 }
+/* "add all": no conflicts and no overwrite of a label the analyst set. */
+function khBulk(){ var out=[]; for(var i=0;i<KH_LEARNED.length;i++){ var e=KH_LEARNED[i]; if(!e.conflict && !e.warn) out.push(e); } return out; }
 function khAcceptLearned(i){
-  khMerge(i<0 ? KH_LEARNED.slice(0) : [KH_LEARNED[i]]);
-  if(i<0) KH_LEARNED=[]; else KH_LEARNED.splice(i,1);
+  if(i>=0 && KH_LEARNED[i].conflict) return;
+  var take=i<0 ? khBulk() : [KH_LEARNED[i]];
+  khMerge(take);
+  for(var j=KH_LEARNED.length-1;j>=0;j--) for(var t=0;t<take.length;t++) if(KH_LEARNED[j]===take[t]){ KH_LEARNED.splice(j,1); break; }
   khRenderLearned(); $("khInfo").innerHTML="Save &amp; apply to keep them";
 }
 function khSave(){
