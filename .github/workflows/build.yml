@@ -34,7 +34,8 @@ jobs:
           Compress-Archive -Path dist/* -DestinationPath LoginActivityTriage-bundle.zip
           # SHA256SUMS.txt (sha256sum format): the HTA verifies Update / Update engine downloads against it (0.4.0+).
           $assets = 'dist/LoginActivityTriage.hta', 'dist/LoginActivityTriageCli.exe', 'LoginActivityTriage-bundle.zip'
-          $assets | ForEach-Object { (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower() + '  ' + (Split-Path $_ -Leaf) } | Set-Content SHA256SUMS.txt -Encoding ascii
+          $lines = $assets | ForEach-Object { (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower() + '  ' + (Split-Path $_ -Leaf) }
+          [IO.File]::WriteAllText("$PWD/SHA256SUMS.txt", ($lines -join "`n") + "`n")   # LF line ends, so `sha256sum -c` accepts it too
           Get-Content SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v7
