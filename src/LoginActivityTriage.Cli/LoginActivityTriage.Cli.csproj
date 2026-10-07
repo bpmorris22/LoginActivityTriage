@@ -7,6 +7,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AssemblyName>LoginActivityTriageCli</AssemblyName>
+    <ApplicationIcon>..\..\hta\LoginActivityTriage.ico</ApplicationIcon>
     <RootNamespace>LoginActivityTriage.Cli</RootNamespace>
     <InvariantGlobalization>false</InvariantGlobalization>
     <!-- Framework-dependent single file: small, and runs on any box with the .NET 8+ runtime

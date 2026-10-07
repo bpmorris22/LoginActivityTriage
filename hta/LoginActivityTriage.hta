@@ -288,7 +288,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.4.1";
+var APP_VERSION = "0.4.2";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -961,7 +961,8 @@ function pinMatch(d,row,pin){
   if(pin.col==="SourceIp"){ var v=String(cell(d,row,"SourceIp")).toLowerCase(); return v===want || (";"+v.replace(/\s/g,"")+";").indexOf(";"+want+";")>=0; }
   return String(cell(d,row,pin.col)).toLowerCase()===want;
 }
-function filteredRows(view){
+/* noDates: ignore the from / to filter and skip the sort (render counts the rows the dates hide). */
+function filteredRows(view, noDates){
   var V=VIEWS[view], d=ds(V.ds), out=[], q=F.q, i, row;
   var pin=(F.pin && F.pin.view===view)?F.pin:null, story=(view==="timeline")?F.story:null;
   for(i=0;i<d.rows.length;i++){ row=d.rows[i];
@@ -972,7 +973,7 @@ function filteredRows(view){
       if(F.remOnly){ var tq=cell(d,row,"Technique"); if(!tq || tq==="RDP") continue; }
       if(F.failOnly && cell(d,row,"Result")!=="Failure") continue;
     }
-    if((F.from||F.to) && V.time){ var dn=dayNum(cell(d,row,V.time)); if(F.from && dn<F.from) continue; if(F.to && dn>F.to) continue; }
+    if(!noDates && (F.from||F.to) && V.time){ var dn=dayNum(cell(d,row,V.time)); if(F.from && dn<F.from) continue; if(F.to && dn>F.to) continue; }
     if(pin && !pinMatch(d,row,pin)) continue;
     if(story){ var t=msOf(cell(d,row,"Timestamp")); if(Math.abs(t-story.t)>story.win) continue;
       var rel=(story.user && bareUser(cell(d,row,"User"))===story.user) || (story.ip && cell(d,row,"SourceIp")===story.ip) ||
@@ -982,7 +983,7 @@ function filteredRows(view){
     if(q && rowText(d,row).indexOf(q)<0) continue;
     out.push(row);
   }
-  sortRows(view, d, out);
+  if(!noDates) sortRows(view, d, out);
   return out;
 }
 function sortRows(view, d, rows){
@@ -1105,6 +1106,7 @@ function render(){
     window.setTimeout(function(){ try{ ds("events"); }catch(e){ setStatus("Could not read "+ef+": "+e.message,"err"); return; }
       setStatus("Loaded "+nf(DATA.events.rows.length)+" events from "+ef,"ok"); render(); },30); return; }
   var d=ds(V.ds), rows=filteredRows(view), cols=colsOf(view), st=SORT[view]||{};
+  var dateHidden=((F.from||F.to) && V.time) ? filteredRows(view,true).length-rows.length : 0;
   window.__rows=rows; window.__d=d;
   var h=['<thead><tr>'];
   var ctips=COLTIPS[view]||{};
@@ -1119,16 +1121,22 @@ function render(){
     for(var k=0;k<cols.length;k++) h.push('<td'+(k===0?' class="first"':'')+'>'+cellHtml(view,d,r,cols[k])+'</td>');
     h.push('</tr>'); }
   if(!rows.length) h.push('<tr><td class="muted" colspan="'+Math.max(1,cols.length)+'">'+(d.missing?esc(FILES[V.ds])+" not found in the results folder"+
-    (V.ds==="remotes"?" - results from an older engine; Process again to create it":""):"no rows match the current filters")+'</td></tr>');
+    (V.ds==="remotes"?" - results from an older engine; Process again to create it":""):"no rows match the current filters"+(dateHidden?" - "+nf(dateHidden)+" match outside the date filter (show all dates, right of the row count)":""))+'</td></tr>');
   h.push('</tbody>');
   $("tbl").innerHTML=h.join("");
   var subsetNote="";
   if(view==="timeline" && eventsFile()==="timeline.csv" && SUMMARY && SUMMARY.eventsKept>d.rows.length)
     subsetNote=" (triage timeline; "+nf(SUMMARY.eventsKept)+" in the full events.csv)";
-  $("count").innerHTML=esc(nf(rows.length)+" of "+nf(d.rows.length)+" row(s)"+subsetNote)+maxRowsWarn(lim, rows.length);
+  $("count").innerHTML=esc(nf(rows.length)+" of "+nf(d.rows.length)+" row(s)"+subsetNote)+maxRowsWarn(lim, rows.length)+dateHiddenNote(dateHidden);
   renderChips();
   if(SELFTEST && !SELFTEST.views[view]) SELFTEST.views[view]={ rows:rows.length, total:d.rows.length, drawn:$("tbl").getElementsByTagName("tr").length-1 };
 }
+/* Rows that match every other filter but fall outside the from / to dates (the overview counts ignore the dates). */
+function dateHiddenNote(n){ if(!(n>0)) return "";
+  var win=($("dfrom").value||"...")+" .. "+($("dto").value||"...");
+  return ' <span class="maxwarn" title="'+esc(nf(n)+" more row(s) match the other filters but fall outside the date filter "+win+". The overview counts and charts ignore the dates.")+'">'+
+    esc("+"+nf(n)+" outside the dates")+'</span> <a href="#" onclick="showAllDates();return false;">show all dates</a>'; }
+function showAllDates(){ syncDate("from","",true); syncDate("to","",true); render(); windowNote(); }
 function maxRowsWarn(shown,total){ if(!(total>shown)) return "";
   return ' <span class="maxwarn" title="'+esc("Drawing the first "+nf(shown)+" of "+nf(total)+" matching rows - the cap keeps the app responsive; nothing was discarded. Narrow the filters, or Export view -> CSV, which writes the full filtered set.")+'">&#9888; Maximum rows exceeded</span>'; }
 function renderChips(){
@@ -1687,6 +1695,23 @@ var MANUAL_URL = "https://bpmorris22.github.io/LoginActivityTriage/manual.html";
 function openManual(){ var p=(htaFolder()||"")+"\\docs\\manual.html"; openUrl(fileExists(p) ? p : MANUAL_URL); }
 function openHelp(){ try{ $("helpVer").innerHTML="v"+APP_VERSION+(ENGINE_VER?" &middot; engine v"+ENGINE_VER:""); }catch(e){} showEl("helpModal",true); }
 function closeHelp(){ showEl("helpModal",false); }
+/* Desktop shortcut carrying the app icon. mshta ignores HTA:APPLICATION ICON= in IE=edge mode (tested: relative
+   and absolute paths, tag before the meta), so the running window keeps the mshta icon; the shortcut and the
+   engine exe carry LoginActivityTriage.ico. The target is mshta.exe itself, so it works where .hta is re-associated. */
+var SELF_ICO="LoginActivityTriage.ico";
+function makeShortcut(){
+  var hta=selfPath(), dir=htaFolder()||"", ico=dir+"\\"+SELF_ICO;
+  if(!fileExists(hta)){ setStatus("Can't locate this app's own file for the shortcut.","err"); return; }
+  if(!fileExists(ico)){ setStatus(SELF_ICO+" is not next to this .hta (it ships in the release bundle), so the shortcut would get the default icon. Copy it here and try again.","err"); return; }
+  try{ var sh=new ActiveXObject("WScript.Shell"), lnk=sh.SpecialFolders("Desktop")+"\\Login Activity Triage.lnk";
+    if(fileExists(lnk) && !confirm("Replace the existing desktop shortcut?\n\n"+lnk)) return;
+    var s=sh.CreateShortcut(lnk);
+    s.TargetPath=sh.ExpandEnvironmentStrings("%SystemRoot%")+"\\System32\\mshta.exe";
+    s.Arguments='"'+hta+'"'; s.WorkingDirectory=dir; s.IconLocation=ico+",0";
+    s.Description="Login Activity Triage - logons, RDP and lateral movement from EVTX"; s.Save();
+    closeHelp(); setStatus("Desktop shortcut created: "+lnk,"ok");
+  }catch(e){ setStatus("Could not create the shortcut: "+e.message,"err"); }
+}
 var SELF_LATEST="", SELF_ASSET_URL="", SELF_SUMS_URL="";
 /* Offline mode: /offline on the command line or LAT_OFFLINE=1 in the environment. Nothing is fetched from GitHub. */
 var OFFLINE=false;
@@ -1793,6 +1818,7 @@ window.onload=function(){ trace("onload"); try{ init(); }catch(e){ trace("init t
     <h2>Login Activity Triage <span class="muted" style="font-size:13px;font-weight:400" id="helpVer"></span></h2>
     <div class="muted" style="font-family:Consolas,monospace;font-size:12px">GitHub: <span class="lnk" onclick="openUrl(GITHUB)">https://github.com/bpmorris22/LoginActivityTriage</span></div>
     <p><span class="lnk" onclick="openManual()"><b>Open the full manual</b></span> <span class="muted">(screens, every detection rule, the engine's command line and outputs)</span></p>
+    <p><span class="lnk" onclick="makeShortcut()"><b>Create desktop shortcut</b></span> <span class="muted">(opens this copy of the app, with the app icon; needs <code>LoginActivityTriage.ico</code> next to this <code>.hta</code>)</span></p>
     <p>Answers <i>who logged on, from where, to which host, how, and what ran remotely</i> from offline EVTX (or this machine's live logs). For forensic / defensive use. The engine (<code>LoginActivityTriageCli.exe</code>) is read-only against the evidence; this app drives it and explores its CSVs.</p>
     <h3>Quick start</h3>
     <ul>

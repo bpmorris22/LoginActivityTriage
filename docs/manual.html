@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Login Activity Triage — Manual</title>
-<meta name="description" content="User manual for Login Activity Triage 0.4.1: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
+<link rel="icon" type="image/svg+xml" href="images/app-icon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="images/app-icon-32.png">
+<meta name="description" content="User manual for Login Activity Triage 0.4.2: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
 <style>
   :root{
     --bg:#ffffff; --panel:#f6f8fa; --text:#1f2328; --muted:#59636e; --line:#d1d9e0; --accent:#0969da;
@@ -65,7 +67,7 @@
 <div class="layout">
 <nav class="toc" aria-label="Contents">
   <div class="brand">Login Activity Triage</div>
-  <div class="ver">Manual &middot; version 0.4.1</div>
+  <div class="ver">Manual &middot; version 0.4.2</div>
   <ol>
     <li><a href="#overview">What it does</a></li>
     <li><a href="#install">Install &amp; requirements</a></li>
@@ -116,7 +118,7 @@
 <ul>
   <li>Windows 10 / 11 or Windows Server 2016+ (the HTA runs in <code>mshta.exe</code>, which ships with Windows).</li>
   <li>The <strong>.NET 8 runtime</strong> (or newer) for the engine. The HTA shows <em>engine: will not start</em> when it is missing.</li>
-  <li>Keep <code>LoginActivityTriage.hta</code> and <code>LoginActivityTriageCli.exe</code> together in one folder (the exe may also live in a <code>bin</code> subfolder). Copy the folder to a local disk: from a network share, Windows zone policy restricts the HTA's file access.</li>
+  <li>Keep <code>LoginActivityTriage.hta</code> and <code>LoginActivityTriageCli.exe</code> together in one folder (the exe may also live in a <code>bin</code> subfolder). <code>LoginActivityTriage.ico</code> from the release is optional: <em>Help &rarr; Create desktop shortcut</em> uses it. Copy the folder to a local disk: from a network share, Windows zone policy restricts the HTA's file access.</li>
   <li>Reading this machine's <strong>live Security log</strong> requires administrator rights; the HTA offers <em>Relaunch elevated</em>. Offline EVTX needs no elevation.</li>
 </ul>
 <p>Get both files (or the bundle zip, which includes this manual) from the <a href="https://github.com/bpmorris22/LoginActivityTriage/releases/latest">latest release</a>, or build the engine from source:</p>
@@ -152,7 +154,7 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
   <tr><td>Engine window (UTC)</td><td>Optional from / to dates. Events outside are not imported. This is <strong>the same date window</strong> as the from / to filter above the tables: changing either updates the other.</td></tr>
   <tr><td>Process &rarr; analyze</td><td>Runs the engine. Results load only when the run succeeds; if it fails, the status line says so and the previous results stay untouched and unloaded.</td></tr>
   <tr><td>Check engine &middot; Show log &middot; HTML reports &middot; Open in Timeline Explorer</td><td>Engine version check, the engine's console / run log, the self-contained HTML reports, and <code>events.csv</code> opened in Eric Zimmerman's Timeline Explorer when it is installed.</td></tr>
-  <tr><td>Help &middot; A&minus; / A+</td><td>Built-in help, and text size for the whole window (pop-ups follow it).</td></tr>
+  <tr><td>Help &middot; A&minus; / A+</td><td>Built-in help, and text size for the whole window (pop-ups follow it). Help also has <strong>Create desktop shortcut</strong>: a shortcut to this copy of the app with the app icon (it needs <code>LoginActivityTriage.ico</code> next to the <code>.hta</code>; the running window itself keeps the standard mshta icon).</td></tr>
 </table>
 
 <h3 id="overview-card">Overview</h3>
@@ -171,7 +173,7 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
 <ul>
   <li><strong>Search all columns</strong>: substring match across every column of the current tab (including Known hosts names).</li>
   <li><strong>Host</strong>: on Remote sessions the list has two groups, <em>Local hosts</em> and <em>Remote targets</em> (address, resolved name and session count); a host matches either end of a connection. A host that does not exist on the tab you switch to is cleared.</li>
-  <li><strong>Technique</strong> (sessions, timeline), <strong>remote-exec only</strong> and <strong>failures only</strong> (timeline), and the <strong>from / to</strong> date window.</li>
+  <li><strong>Technique</strong> (sessions, timeline), <strong>remote-exec only</strong> and <strong>failures only</strong> (timeline), and the <strong>from / to</strong> date window. The overview tiles and charts count every row whatever the dates; when the dates hide rows that match the other filters, the row count says how many (<em>+N outside the dates</em>) with a <strong>show all dates</strong> link.</li>
   <li><strong>Sort</strong>: every column header has a &#8597; button; click it (or the header) to sort, again to reverse.</li>
   <li><strong>Click a row</strong> for every field in the detail card, with pivots: open the session, the session's events, a <em>logon story</em> (&plusmn;30 minutes or &plusmn;2 hours of events sharing the user, IP or host), or the timeline for that user, IP or host. The card closes when you change tabs.</li>
   <li><strong>Export view &rarr; CSV</strong> writes the full filtered set (not just the 5,000 rows drawn) to the results folder. <strong>Copy for case notes</strong> puts readable lines on the clipboard.</li>
@@ -254,7 +256,7 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
   <tr><td>Remote WMI / DCOM execution</td><td class="sev h">High</td><td>A shell spawned by WmiPrvSE or a DCOM object; Impacket wmiexec / dcomexec output files.</td><td>T1047, T1021.003</td></tr>
   <tr><td>Scheduled task created remotely</td><td class="sev h">High</td><td>A task registered from a network logon (or Impacket atexec).</td><td>T1053.005</td></tr>
   <tr><td>Write access to executable on admin share</td><td class="sev h">High</td><td>A 5145 access check granted WriteData / AppendData to an executable or script on ADMIN$ / C$ (read-only access does not count; denied access is context only).</td><td>T1021.002, T1570</td></tr>
-  <tr><td>Remote access software installed / executed</td><td class="sev h">High / Medium</td><td>AnyDesk, TeamViewer, Splashtop, ScreenConnect, Atera, RustDesk and other RMM tools; High from a user-writable path or during a remote session.</td><td>T1219</td></tr>
+  <tr><td>Remote access software installed / executed</td><td class="sev h">High / Medium</td><td>About 60 remote access / RMM products by service name or binary path (7045 / 4697 installs, 4688 / Sysmon 1 process starts): AnyDesk, TeamViewer, Splashtop, ScreenConnect, Atera, RustDesk, ToDesk, Sunlogin, UltraViewer, AnyViewer, ISL Online, DWService, Parsec, NoMachine, VNC and more. Renamed binaries, unlisted products and portable tools without a service when process auditing is off are missed. High from a user-writable path or during a remote session.</td><td>T1219</td></tr>
   <tr><td>Service with command-line ImagePath</td><td class="sev h">High</td><td>A service whose image is a shell, PowerShell or script host.</td><td>T1543.003</td></tr>
   <tr><td>Password spray</td><td class="sev h">High</td><td>One source fails for 8+ different accounts.</td><td>T1110.003</td></tr>
   <tr><td>Failed logons followed by success</td><td class="sev h">Medium / High</td><td>3+ failures then success for the same account (domain-aware) from one source; High from 10.</td><td>T1110</td></tr>
@@ -371,7 +373,7 @@ LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machin
 </table>
 
 <footer>
-  Login Activity Triage 0.4.1 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
+  Login Activity Triage 0.4.2 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
   <a href="https://github.com/bpmorris22/LoginActivityTriage">github.com/bpmorris22/LoginActivityTriage</a> &middot;
   see <code>CHANGELOG.md</code> for what changed in each version.
 </footer>

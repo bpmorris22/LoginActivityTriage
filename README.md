@@ -15,7 +15,7 @@ Three front ends share one parsing and detection core:
 **Manual:** <https://bpmorris22.github.io/LoginActivityTriage/manual.html> (source in
 [`docs/manual.html`](docs/manual.html); it also ships in the release bundle and opens from the
 HTA's Help). **Download:** [latest release](https://github.com/bpmorris22/LoginActivityTriage/releases/latest)
-— `LoginActivityTriage.hta`, `LoginActivityTriageCli.exe` and a bundle zip. Screenshots there and
+— `LoginActivityTriage.hta`, its icon, `LoginActivityTriageCli.exe` and a bundle zip. Screenshots there and
 below show a fictional incident; every name and address is invented.
 
 ![Overview and findings of a fictional three-host intrusion](docs/images/findings.png)
@@ -61,7 +61,9 @@ ran inside a remote logon session — "what did they run" without importing ever
 ## Quick start (HTA)
 
 1. Put `LoginActivityTriage.hta` and `LoginActivityTriageCli.exe` in one folder (the exe may
-   also live in `.\bin`). The engine needs the .NET 8 (or newer) runtime.
+   also live in `.\bin`). The engine needs the .NET 8 (or newer) runtime. Keep
+   `LoginActivityTriage.ico` next to the HTA if you want **Help → Create desktop shortcut** (a
+   shortcut with the app icon; the running window keeps the standard mshta icon).
 2. Double-click the HTA. Pick an EVTX folder (KAPE / Velociraptor collection trees and multi-host
    folders are fine), a single `.evtx`, or **This machine** (relaunch elevated to read Security).
 3. Set the **target hostname** (or a case label for multi-host input). Leave the after-hours zone on
@@ -131,7 +133,7 @@ dotnet run --project src\LoginActivityTriage.App -c Release           # WPF app
 ```
 
 The HTA does not build the engine; publish it with the command above (or use a release build).
-Tagged releases (`v*`) attach `LoginActivityTriage.hta`, `LoginActivityTriageCli.exe` and a
+Tagged releases (`v*`) attach `LoginActivityTriage.hta`, `LoginActivityTriage.ico`, `LoginActivityTriageCli.exe` and a
 bundle zip; the HTA's self-update and **Download engine** read those assets.
 
 ## Layout
@@ -144,7 +146,7 @@ src/LoginActivityTriage.Export/     CSV (injection-safe) + HTML
 src/LoginActivityTriage.Storage/    SQLite case store (schema migrates older .latdb files)
 src/LoginActivityTriage.Cli/        the engine
 src/LoginActivityTriage.App/        WPF front end
-hta/LoginActivityTriage.hta         HTA front end
+hta/LoginActivityTriage.hta         HTA front end (+ LoginActivityTriage.ico for the engine exe and the desktop shortcut; source art in docs/images/app-icon*.svg)
 tests/LoginActivityTriage.Tests/    normaliser, detection, storage, export and WPF-load tests
 ```
 

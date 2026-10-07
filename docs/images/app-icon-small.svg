@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <title>Login Activity Triage (16-24 px)</title>
+  <rect x="0" y="0" width="16" height="16" rx="3" fill="#0d1117"/>
+  <circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="#58a6ff" stroke-width="1.6"/>
+  <line x1="10" y1="10" x2="13.6" y2="13.6" stroke="#58a6ff" stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="6.5" cy="5.4" r="1.5" fill="#e6edf3"/>
+  <path d="M3.9 9.3a2.6 2.2 0 0 1 5.2 0z" fill="#e6edf3"/>
+</svg>

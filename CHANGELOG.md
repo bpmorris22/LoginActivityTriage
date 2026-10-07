@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.2 — 2026-10-07
+
+### Added
+- **More remote access products** for the "Remote access software installed / executed" rule (about 60
+  now): ToDesk, HopToDesk, Sunlogin (Oray), AweSun, UltraViewer, AnyViewer, ISL Online, DWService,
+  Parsec, Iperius Remote, Getscreen.me, FleetDeck, Remotely, NoMachine, GoToMyPC, LiteManager, TigerVNC,
+  pcAnywhere, Mikogo, ShowMyPC, Jump Desktop, RemotePC, Bomgar, Netop and SuperOps. As before, a product is
+  recognised by its service name or binary path in 7045 / 4697 service installs and 4688 / Sysmon 1
+  process starts. Renamed binaries and portable tools that install no service are missed when process
+  auditing is off.
+- **App icon.** A magnifier over an account, in the app's own colours: `LoginActivityTriage.ico`
+  (16-256 px, with a simplified drawing at 16 and 24 px). The engine exe carries it, the manual uses it
+  as its browser-tab icon, and **Help → Create desktop shortcut** makes a shortcut to this copy of the
+  app with it (the shortcut starts `mshta.exe` directly, so it works where `.hta` files are associated
+  with something else). Releases attach the `.ico` and the bundle includes it.
+- The running HTA window keeps the standard mshta icon: mshta ignores `HTA:APPLICATION ICON=` in the
+  IE=edge document mode the app needs, and setting the icon at runtime would mean a hidden helper
+  process running for as long as the window is open.
+
+### Fixed
+- **Findings "missing" behind the date filter.** The overview tiles and the "Findings by rule" chart
+  count every row, but the tables apply the from / to dates. After a run without an engine window, a
+  date typed later hid older findings with no hint: a chart bar said 1 and its table showed 0. The row
+  count now says how many matching rows the dates hide (*+N outside the dates*), an empty table says
+  so too, and **show all dates** clears the window.
+
 ## 0.4.1 — 2026-10-07
 
 ### Fixed

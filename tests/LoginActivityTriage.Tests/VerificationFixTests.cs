@@ -159,6 +159,16 @@ public class VerificationFixTests
     [InlineData("C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe", "AnyDesk")]
     [InlineData("C:\\Program Files (x86)\\TeamViewer\\TeamViewer.exe", "TeamViewer")]
     [InlineData("C:\\Program Files (x86)\\ScreenConnect Client (abc)\\ScreenConnect.ClientService.exe", "ConnectWise ScreenConnect")]
+    [InlineData("C:\\Program Files\\ToDesk\\ToDesk.exe", "ToDesk")]
+    [InlineData("C:\\Users\\jdoe\\Downloads\\ToDesk_Setup\\ToDesk.exe", "ToDesk")]
+    [InlineData("C:\\Program Files\\HopToDesk\\HopToDesk.exe", "HopToDesk")]
+    [InlineData("C:\\Program Files\\Oray\\SunLogin\\SunloginClient\\SunloginClient.exe", "Sunlogin (Oray)")]
+    [InlineData("C:\\Program Files (x86)\\UltraViewer\\UltraViewer_Desktop.exe", "UltraViewer")]
+    [InlineData("C:\\Program Files (x86)\\AOMEI\\AnyViewer\\AnyViewer.exe", "AnyViewer (AOMEI)")]
+    [InlineData("C:\\Program Files\\DWAgent\\runtime\\dwagent.exe", "DWService")]
+    [InlineData("C:\\Program Files\\Parsec\\parsecd.exe", "Parsec")]
+    [InlineData("C:\\Program Files\\NoMachine\\bin\\nxservice64.exe", "NoMachine")]
+    [InlineData("C:\\Program Files (x86)\\Netop\\Netop Remote Control\\Host\\nhstw32.exe", "Netop Remote Control")]
     public void RemoteAccessToolProcess_IsRecognised(string image, string tool)
     {
         var m = RemoteExecPatterns.ClassifyProcess(image, "C:\\Windows\\explorer.exe", $"\"{image}\"");
@@ -166,6 +176,26 @@ public class VerificationFixTests
         Assert.Equal(RemoteTechnique.RemoteAccessTool, m!.Value.Technique);
         Assert.Equal(tool, m.Value.Variant);
     }
+
+    [Theory]
+    [InlineData("SunloginService", "\"C:\\Program Files\\Oray\\SunLogin\\SunloginClient\\SunloginClient.exe\" --mod=service", "Sunlogin (Oray)")]
+    [InlineData("ToDesk_Service", "\"C:\\Program Files\\ToDesk\\ToDesk_Service.exe\"", "ToDesk")]
+    [InlineData("DWAgent", "\"C:\\Program Files\\DWAgent\\runtime\\dwagsvc.exe\" run", "DWService")]
+    public void RemoteAccessToolService_IsRecognised(string name, string image, string tool)
+    {
+        var m = RemoteExecPatterns.ClassifyService(name, image);
+        Assert.NotNull(m);
+        Assert.Equal(RemoteTechnique.RemoteAccessTool, m!.Value.Technique);
+        Assert.Equal(tool, m.Value.Variant);
+    }
+
+    [Theory]
+    [InlineData("C:\\Windows\\System32\\svchost.exe")]
+    [InlineData("C:\\Users\\jdoe\\Desktop\\SendToDesktop.exe")]
+    [InlineData("C:\\Program Files\\Netopia\\agent.exe")]
+    [InlineData("C:\\Program Files\\ParsecTools\\report.exe")]
+    public void OrdinaryBinaries_AreNotRemoteAccessTools(string image) =>
+        Assert.Null(RemoteExecPatterns.ClassifyRemoteAccessTool(null, image));
 
     [Fact]
     public void Event6013_GivesTheHostOffset_AndAfterHoursUsesIt()

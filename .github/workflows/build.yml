@@ -28,12 +28,12 @@ jobs:
       - name: Assemble HTA bundle
         shell: pwsh
         run: |
-          Copy-Item hta/LoginActivityTriage.hta dist/
+          Copy-Item hta/LoginActivityTriage.hta, hta/LoginActivityTriage.ico dist/   # Help > Create desktop shortcut uses the .ico next to the HTA
           Copy-Item README.md, LICENSE dist/
           Copy-Item docs dist/docs -Recurse   # manual.html + screenshots; the HTA's Help opens it
           Compress-Archive -Path dist/* -DestinationPath LoginActivityTriage-bundle.zip
           # SHA256SUMS.txt (sha256sum format): the HTA verifies Update / Update engine downloads against it (0.4.0+).
-          $assets = 'dist/LoginActivityTriage.hta', 'dist/LoginActivityTriageCli.exe', 'LoginActivityTriage-bundle.zip'
+          $assets = 'dist/LoginActivityTriage.hta', 'dist/LoginActivityTriage.ico', 'dist/LoginActivityTriageCli.exe', 'LoginActivityTriage-bundle.zip'
           $lines = $assets | ForEach-Object { (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower() + '  ' + (Split-Path $_ -Leaf) }
           [IO.File]::WriteAllText("$PWD/SHA256SUMS.txt", ($lines -join "`n") + "`n")   # LF line ends, so `sha256sum -c` accepts it too
           Get-Content SHA256SUMS.txt
@@ -53,6 +53,7 @@ jobs:
         with:
           files: |
             dist/LoginActivityTriage.hta
+            dist/LoginActivityTriage.ico
             dist/LoginActivityTriageCli.exe
             LoginActivityTriage-bundle.zip
             SHA256SUMS.txt
