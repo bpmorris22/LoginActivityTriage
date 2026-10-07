@@ -288,7 +288,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.4.0";
+var APP_VERSION = "0.4.1";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -519,6 +519,30 @@ function checkEngine(){
   $("getBtn").innerHTML=old?"Update engine":"Download engine"; showEl("getBtn", old);
   return !!m;
 }
+/* PowerShell lines defining Test-LatAsset <sumsUrl> <file> <name>: checks a downloaded file against a release's
+   SHA256SUMS.txt and returns 'sha256-verified' ('no-checksum-file' when the release has none); throws on a mismatch or
+   when the list has no entry for the file. The list is saved with -OutFile and read as text: GitHub serves release
+   assets as application/octet-stream, for which Windows PowerShell 5.1 returns .Content as a byte array, not a
+   string (0.4.0 searched that array, found no entry and refused every engine download - fixed in 0.4.1). The name is
+   compared exactly (a leading '*' binary-mode marker is allowed), never as a regular expression. */
+function psChecksumFn(){
+  return ["function Test-LatAsset([string]$sumsUrl, [string]$file, [string]$name){",
+    "  if(-not $sumsUrl){ return 'no-checksum-file' }",
+    "  $st=Join-Path $env:TEMP ('latsums_'+[guid]::NewGuid().ToString('N')+'.txt')",
+    "  try { Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -OutFile $st -Headers $h; $sums=[IO.File]::ReadAllText($st) }",
+    "  finally { Remove-Item $st -Force -ErrorAction SilentlyContinue }",
+    "  $want=''",
+    "  foreach($ln in ($sums -split '[\\r\\n]+')){ $p=@($ln.Trim() -split '\\s+'); if($p.Count -ge 2 -and $p[$p.Count-1].TrimStart('*') -ieq $name){ $want=$p[0]; break } }",
+    "  if(-not $want){ throw ('The release checksum list (SHA256SUMS.txt) has no entry for '+$name+' - not installed') }",
+    "  $have=(Get-FileHash $file -Algorithm SHA256).Hash",
+    "  if($want -ine $have){ throw ('SHA-256 mismatch for '+$name+': the release lists '+$want.ToLower()+', the download is '+$have.ToLower()+' - not installed') }",
+    "  return 'sha256-verified'",
+    "}"];
+}
+/* First line of a PowerShell error log (the exception message), for the status line. */
+function psErrorLine(log){ var L=String(log||"").split(/\r?\n/);
+  for(var i=0;i<L.length;i++){ var s=trimStr(L[i]); if(s && !/^(At |\+|CategoryInfo|FullyQualifiedErrorId|---)/.test(s)) return s.length>220?s.substring(0,220)+"...":s; }
+  return ""; }
 function downloadEngine(){
   if(OFFLINE){ setStatus("Offline mode (/offline or LAT_OFFLINE): downloads are disabled. Copy "+ENGINE_EXE+" next to this .hta by hand.","err"); return; }
   var dest=htaFolder()+"\\"+ENGINE_EXE, dq=String(dest).replace(/'/g,"''");
@@ -527,29 +551,25 @@ function downloadEngine(){
   // The download goes to a temporary file and is checked against the release's SHA256SUMS.txt (0.4.0+) before it
   // replaces anything; a mismatch is discarded.
   var L=["$ErrorActionPreference='Stop'","[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
-    "$h=@{ 'User-Agent'='"+SELF_HTA+"' }; $r=$null",
+    "$h=@{ 'User-Agent'='"+SELF_HTA+"' }; $r=$null"].concat(psChecksumFn(), [
     "try { $r=Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/"+SELF_REPO+"/releases/tags/v"+APP_VERSION+"' -Headers $h } catch { $r=$null }",
     "if(-not $r -or -not ($r.assets | Where-Object { $_.name -eq '"+ENGINE_EXE+"' })){ $r=Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/"+SELF_REPO+"/releases/latest' -Headers $h }",
     "$a=$r.assets | Where-Object { $_.name -eq '"+ENGINE_EXE+"' } | Select-Object -First 1",
     "if(-not $a){ throw 'The latest release has no "+ENGINE_EXE+" asset' }",
     "$tmp=Join-Path $env:TEMP ('latdl_'+[guid]::NewGuid().ToString('N')+'.exe')",
     "Invoke-WebRequest -UseBasicParsing -Uri $a.browser_download_url -OutFile $tmp -Headers $h",
-    "$v='no-checksum-file'; $s=$r.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1",
-    "if($s){ $sums=(Invoke-WebRequest -UseBasicParsing -Uri $s.browser_download_url -Headers $h).Content",
-    "  $line=($sums -split '[\\r\\n]+') | Where-Object { $_ -match '\\s"+ENGINE_EXE.replace(/\./g,"\\.")+"\\s*$' } | Select-Object -First 1",
-    "  $want=if($line){ ($line -split '\\s+')[0] } else { '' }; $have=(Get-FileHash $tmp -Algorithm SHA256).Hash",
-    "  if(-not $want -or $want.ToLower() -ne $have.ToLower()){ Remove-Item $tmp -Force; throw ('SHA-256 mismatch: the release lists '+$want+', the download is '+$have) }",
-    "  $v='sha256-verified' }",
+    "$s=$r.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1",
+    "try { $v=Test-LatAsset $(if($s){ $s.browser_download_url } else { '' }) $tmp '"+ENGINE_EXE+"' } catch { Remove-Item $tmp -Force -ErrorAction SilentlyContinue; throw }",
     "Copy-Item $tmp '"+dq+"' -Force; Remove-Item $tmp -Force",
-    "Write-Output ('DL_OK '+$r.tag_name+' '+$v)"];
+    "Write-Output ('DL_OK '+$r.tag_name+' '+$v)"]);
   try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(e){ setStatus("Could not stage the download: "+e.message,"err"); return; }
   setStatus("Downloading the engine from GitHub...","muted");
   var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1'], false);
   try{ fso.DeleteFile(ps1); }catch(e0){}
   var m=/DL_OK\s+(\S+)\s+(\S+)/.exec(String(r.log));
   if(m && checkEngine()) setStatus("Engine "+m[1]+" downloaded ("+(m[2]==="sha256-verified"?"SHA-256 verified against the release checksums":"that release has no checksum file - not verified")+"): "+EXE,"ok");
-  else { appendLog("--- engine download ---\n"+r.log); showLog();
-    setStatus("Download failed (offline, checksum mismatch, or no release published yet) - see the log. Copy "+ENGINE_EXE+" next to this .hta.","err"); }
+  else { appendLog("--- engine download ---\n"+r.log); showLog(); var why=psErrorLine(r.log);
+    setStatus("Engine download failed"+(why?": "+why:" (offline, or no release published yet)")+" - see the log. Or copy "+ENGINE_EXE+" next to this .hta.","err"); }
 }
 function checkElevation(){
   try{ var r=runBat(['net session > nul 2>&1 && echo ELEVATED> "__LOG__"'], false); ELEVATED=/ELEVATED/.test(r.log); }catch(e){ ELEVATED=false; }
@@ -1700,21 +1720,18 @@ function doSelfUpdate(){
   var tq=String(target).replace(/'/g,"''"), uq=String(SELF_ASSET_URL).replace(/'/g,"''"), sq=String(SELF_SUMS_URL).replace(/'/g,"''");
   // The download is checked against the release's SHA256SUMS.txt (0.4.0+ releases); a mismatch is discarded, not installed.
   var L=["$ErrorActionPreference='Stop'","[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
-    "$h=@{ 'User-Agent'='"+SELF_HTA+"' }",
+    "$h=@{ 'User-Agent'='"+SELF_HTA+"' }"].concat(psChecksumFn(), [
     "$tmp=Join-Path $env:TEMP ('latupd_'+[guid]::NewGuid().ToString('N')+'.hta')",
     "Invoke-WebRequest -UseBasicParsing -Uri '"+uq+"' -OutFile $tmp -Headers $h",
-    "if((Get-Item $tmp).Length -lt 2000){ throw 'downloaded file too small' }",
-    "$v='no-checksum-file'; $sums=''",
-    sq ? "$sums=(Invoke-WebRequest -UseBasicParsing -Uri '"+sq+"' -Headers $h).Content" : "",
-    "$line=($sums -split '[\\r\\n]+') | Where-Object { $_ -match '\\s"+SELF_HTA.replace(/\./g,"\\.")+"\\s*$' } | Select-Object -First 1",
-    "if($line){ $want=($line -split '\\s+')[0]; $have=(Get-FileHash $tmp -Algorithm SHA256).Hash",
-    "  if($want.ToLower() -ne $have.ToLower()){ Remove-Item $tmp -Force; throw ('SHA-256 mismatch: the release lists '+$want+', the download is '+$have) }; $v='sha256-verified' }",
-    "Copy-Item $tmp '"+tq+"' -Force","Remove-Item $tmp -Force","Write-Output ('SELFUPD_OK '+$v)"];
+    "if((Get-Item $tmp).Length -lt 2000){ Remove-Item $tmp -Force; throw 'downloaded file too small' }",
+    "try { $v=Test-LatAsset '"+sq+"' $tmp '"+SELF_HTA+"' } catch { Remove-Item $tmp -Force -ErrorAction SilentlyContinue; throw }",
+    "Copy-Item $tmp '"+tq+"' -Force","Remove-Item $tmp -Force","Write-Output ('SELFUPD_OK '+$v)"]);
   try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(ew){ setStatus("Self-update stage failed: "+ew.message,"err"); return; }
   var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1'], false); try{ fso.DeleteFile(ps1); }catch(e0){}
   var m=/SELFUPD_OK\s+(\S+)/.exec(String(r.log));
   if(m){ setStatus("Updated to v"+SELF_LATEST+(m[1]==="sha256-verified"?" (SHA-256 verified against the release checksums)":" (that release has no checksum file - not verified)")+" - close and reopen the app.","ok"); showEl("selfUpd",false); }
-  else { appendLog("--- self-update ---\n"+r.log); showLog(); setStatus("Self-update failed - see log (a checksum mismatch is not installed).","err"); }
+  else { appendLog("--- self-update ---\n"+r.log); showLog(); var why=psErrorLine(r.log);
+    setStatus("Self-update failed"+(why?": "+why:"")+" - see the log. This file was not changed.","err"); }
 }
 
 /* Trace file for unattended runs (/selftest): %TEMP%\lat-hta-trace.log */

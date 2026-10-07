@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.1 — 2026-10-07
+
+### Fixed
+- **Update engine refused every download in 0.4.0** with "SHA-256 mismatch: the release lists , the
+  download is …". GitHub serves release assets as `application/octet-stream`, for which Windows
+  PowerShell 5.1 returns the response as a byte array, not text, so the checksum line for the engine was
+  never found and the empty value was reported as a mismatch. The engine itself was intact. The checksum
+  list is now saved to a file and read as text, the asset name is compared exactly rather than as a
+  pattern, and "no entry in the checksum list" is reported separately from a real mismatch.
+- The 0.4.0 self-update had the same lookup; there the missing line fell through to "no checksum file",
+  so an update from 0.4.0 installs without verification (the status line says so). From 0.4.1 both
+  paths share one checked function, and a checksum list without an entry for the file refuses it.
+- A failed download or self-update now shows the actual reason on the status line.
+
 ## 0.4.0 — 2026-10-07
 
 The feature items of the 7 October review.
