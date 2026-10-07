@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.4.0 — 2026-10-07
+
+The feature items of the 7 October review.
+
+### Added
+- **Evidence hashes.** `files.csv` records the **SHA-256 and size of every source log** as it was read
+  (`Sha256`, `SizeBytes`; `summary.json` says `fileHashes: SHA-256`), so the results carry the
+  chain-of-custody record of exactly which bytes were analysed. `--no-hash` skips it. The HTA's Import
+  log explains each column on hover, and the temporary copy *Open in Event Viewer* makes of a long-path
+  log is now checked against the recorded hash (certutil) and refused if it differs.
+- **Public-source rules beyond RDP** (the previous rule needed a 4624 type 10 / 12 or LSM 21):
+  *Network logon from external address* (High: a successful type 3 / 8 logon from a routable address -
+  SMB, WinRM, RPC reachable from the internet, and the credentials worked); *RDP authentication from
+  external address* (High: RCM 1149 from a public address with no session logon in the logs); *RDP
+  reachable from the internet* (Medium, one finding per host: RdpCoreTS 131 / 140 connections from
+  public addresses, with the addresses listed, so a scanned listener does not flood the list).
+- **Group removals and renames.** 4729 / 4733 / 4757 (member removed) and 4781 (account renamed) are
+  imported. *Privileged group membership added then removed* (High) catches the add-use-remove cleanup
+  pattern within a day; a removal with no recent add is *Member removed from privileged group*
+  (Medium). A renamed account is named by its current name everywhere (the SID resolver follows the
+  rename), the old name stays in Details, and the Users pivot's `GroupChanges` counts removals too.
+- **More 4648 SPN classes.** Explicit credentials for a `cifs/` SPN are an outbound **SMB** session
+  (file / admin shares on another host, finding *Outbound SMB with explicit credentials from this
+  host*, Low) and `RPCSS/` an outbound WMI / DCOM hand-off, alongside the existing `TERMSRV/`,
+  `HTTP/` and `WSMAN/`.
+- **Business hours across midnight**: `--hours 22-6` means a shift from 22:00 to 06:00; after hours is
+  the daytime.
+- **Release checksums.** CI attaches `SHA256SUMS.txt` to every release; **Update** and **Update
+  engine** download to a temporary file, verify it against that list and discard a mismatch. The
+  status line says whether the download was verified.
+- **Offline mode**: `/offline` on the command line or `LAT_OFFLINE=1` in the environment keeps the HTA
+  off the network (no GitHub update check, no downloads); the app pill says "offline".
+- Tests: 143 (`FeatureTests040`).
+
 ## 0.3.3 — 2026-10-07
 
 Fixes from the 4 and 7 October code reviews (`review-artifacts-2026-10-07` fixtures reproduce the engine items).

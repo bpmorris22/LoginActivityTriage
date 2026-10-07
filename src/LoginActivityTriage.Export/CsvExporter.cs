@@ -177,6 +177,7 @@ public static class CsvExporter
     public static readonly IReadOnlyList<CsvColumn<ImportedFileResult>> FileColumns = new CsvColumn<ImportedFileResult>[]
     {
         new("File", f => f.FilePath), new("Hostname", f => f.Hostname), new("LogSource", f => f.LogSource),
+        new("SizeBytes", f => Long(f.SizeBytes)), new("Sha256", f => f.Sha256),
         new("RecordsRead", f => Int(f.RecordsRead)), new("EventsKept", f => Int(f.EventsNormalised)),
         new("Skipped", f => Int(f.RecordsSkipped)), new("Duplicates", f => Int(f.DuplicatesSkipped)),
         new("Filtered", f => Int(f.Filtered)), new("Failed", f => f.Failed ? "Yes" : "No"), new("Error", f => f.Error),

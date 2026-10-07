@@ -140,13 +140,16 @@ public static class SidResolver
         foreach (var e in list)
         {
             if (e.Sid is null || e.TargetUserName is null || AccountClassifier.IsWellKnownServiceSid(e.Sid)) continue;
-            if (e.EventId is 4728 or 4732 or 4756) continue; // member SID with group-centric naming
+            if (e.EventId is 4728 or 4732 or 4756 or 4729 or 4733 or 4757) continue; // member SID with group-centric naming
             // Only Security events pair the account's OWN SID with its name (TargetUserSid / SubjectUserSid).
             // Other logs carry the SID the record was logged under, which is the process account: a
             // PowerShell 4103 on a RunAs / JEA endpoint names the connected user but is logged under the
             // RunAs account, and would teach that SID the wrong name.
             if (!IsSecurityLog(e)) continue;
-            names.TryAdd(e.Sid, (e.TargetUserName, e.TargetDomain));
+            // The list is time-ordered: a rename (4781) replaces the earlier name, so later SID-only
+            // events get the account's current name; otherwise the first pairing stands.
+            if (e.EventId == 4781) names[e.Sid] = (e.TargetUserName, e.TargetDomain);
+            else names.TryAdd(e.Sid, (e.TargetUserName, e.TargetDomain));
         }
         var resolved = 0;
         foreach (var e in list)

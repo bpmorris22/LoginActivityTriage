@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Login Activity Triage — Manual</title>
-<meta name="description" content="User manual for Login Activity Triage 0.3.3: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
+<meta name="description" content="User manual for Login Activity Triage 0.4.0: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
 <style>
   :root{
     --bg:#ffffff; --panel:#f6f8fa; --text:#1f2328; --muted:#59636e; --line:#d1d9e0; --accent:#0969da;
@@ -65,7 +65,7 @@
 <div class="layout">
 <nav class="toc" aria-label="Contents">
   <div class="brand">Login Activity Triage</div>
-  <div class="ver">Manual &middot; version 0.3.3</div>
+  <div class="ver">Manual &middot; version 0.4.0</div>
   <ol>
     <li><a href="#overview">What it does</a></li>
     <li><a href="#install">Install &amp; requirements</a></li>
@@ -225,7 +225,7 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
 <p><strong>Remote hosts</strong> are the systems the collected hosts connected to (outbound sessions and explicit-credential targets): connections by technique, which local hosts connected, the accounts and credentials used, and <em>Collected</em> when that system's own logs are in the evidence too.</p>
 
 <h3 id="tab-import">Import log</h3>
-<p>What the engine read: per-file records read, events kept, duplicates, filtered and unreadable records, and errors. A file that is not a readable event log (corrupt, truncated, not EVTX) is listed as failed with the reason; the overview line warns when any source failed.</p>
+<p>What the engine read: per-file <strong>SHA-256 and size</strong> (the chain-of-custody record of exactly which bytes were analysed &mdash; quote them in the case notes), records read, events kept, duplicates, filtered and unreadable records, and errors. A file that is not a readable event log (corrupt, truncated, not EVTX) is listed as failed with the reason; the overview line warns when any source failed. Hover a column heading for its meaning. The temporary copy that <em>Open in Event Viewer</em> makes of a long-path log is checked against the recorded hash and refused if it differs.</p>
 
 <h2 id="iocs">IOCs &amp; Known hosts</h2>
 <h3>IOCs</h3>
@@ -247,7 +247,8 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
 <table>
   <tr><th>Rule</th><th>Severity</th><th>Fires when</th><th>MITRE</th></tr>
   <tr><td>Event log cleared</td><td class="sev c">Critical</td><td>System 104 or Security 1102.</td><td>T1070.001</td></tr>
-  <tr><td>New account added to privileged group</td><td class="sev c">Critical</td><td>An account created (4720) is added to an admin / remote-access group within a day. Otherwise <em>Member added to privileged group</em> (High).</td><td>T1136, T1098</td></tr>
+  <tr><td>New account added to privileged group</td><td class="sev c">Critical</td><td>An account created (4720) is added to an admin / remote-access group within a day (same SID). Otherwise <em>Member added to privileged group</em> (High).</td><td>T1136, T1098</td></tr>
+  <tr><td>Privileged group membership added then removed</td><td class="sev h">High</td><td>A member removed (4729 / 4733 / 4757) from an admin / remote-access group within a day of being added to it: the add-use-remove cleanup pattern. A removal with no recent add is <em>Member removed from privileged group</em> (Medium).</td><td>T1098</td></tr>
   <tr><td>PsExec-style remote service execution</td><td class="sev h">High</td><td>PSEXESVC / PAExec / RemCom / Impacket psexec-smbexec service, pipe or binary pattern on this host.</td><td>T1569.002, T1021.002</td></tr>
   <tr><td>Service created remotely</td><td class="sev h">High</td><td>A service installed from a network logon or right after remote SCM / admin-share access.</td><td>T1543.003</td></tr>
   <tr><td>Remote WMI / DCOM execution</td><td class="sev h">High</td><td>A shell spawned by WmiPrvSE or a DCOM object; Impacket wmiexec / dcomexec output files.</td><td>T1047, T1021.003</td></tr>
@@ -258,6 +259,9 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
   <tr><td>Password spray</td><td class="sev h">High</td><td>One source fails for 8+ different accounts.</td><td>T1110.003</td></tr>
   <tr><td>Failed logons followed by success</td><td class="sev h">Medium / High</td><td>3+ failures then success for the same account (domain-aware) from one source; High from 10.</td><td>T1110</td></tr>
   <tr><td>RDP logon from external address</td><td class="sev h">High</td><td>RDP logon from a public (non-RFC1918) address.</td><td>T1133, T1021.001</td></tr>
+  <tr><td>RDP authentication from external address</td><td class="sev h">High</td><td>RDP network-level authentication (RCM 1149) from a public address with no session logon in the collected logs (Security log missing, or the session never completed).</td><td>T1133, T1021.001</td></tr>
+  <tr><td>Network logon from external address</td><td class="sev h">High</td><td>A successful network logon (type 3 / 8: SMB, WinRM, RPC...) from a public address.</td><td>T1133, T1021</td></tr>
+  <tr><td>RDP reachable from the internet</td><td class="sev m">Medium</td><td>RDP TCP connections or bad-credential attempts (RdpCoreTS 131 / 140) from public addresses, one finding per host with the addresses listed.</td><td>T1133, T1110</td></tr>
   <tr><td>RDP connection flood (pre-auth)</td><td class="sev h">High / Medium</td><td>30+ RDP TCP connections (RdpCoreTS 131) from one address; High when public.</td><td>T1110, T1133</td></tr>
   <tr><td>Possible Kerberoasting</td><td class="sev h">High</td><td>RC4 service tickets for 3+ user service accounts within 10 minutes.</td><td>T1558.003</td></tr>
   <tr><td>PowerShell Remoting session / WinRS remote shell</td><td class="sev m">Medium</td><td>A WinRM shell was opened on this host.</td><td>T1021.006</td></tr>
@@ -268,7 +272,7 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
   <tr><td>Source IP / User logging on to many hosts</td><td class="sev m">Medium</td><td>One source or account logs on to 3+ hosts.</td><td>T1021, T1078</td></tr>
   <tr><td>Service tickets for many hosts (DC view)</td><td class="sev m">Medium</td><td>One client requests tickets for 15+ computer accounts.</td><td>T1021, T1018</td></tr>
   <tr><td>Outbound PsExec / WMI / task / service control</td><td class="sev m">Medium</td><td>This host launched remote execution against other systems.</td><td>T1569.002, T1047, T1053.005</td></tr>
-  <tr><td>Outbound RDP / PowerShell Remoting from this host</td><td class="sev l">Low</td><td>Grouped per destination with attempt counts, the accounts and credentials used.</td><td>T1021.001, T1021.006</td></tr>
+  <tr><td>Outbound RDP / PowerShell Remoting / SMB from this host</td><td class="sev l">Low</td><td>Grouped per destination with attempt counts, the accounts and credentials used. SMB = explicit credentials for file / admin shares (4648 with a <code>cifs/</code> SPN).</td><td>T1021.001, T1021.006, T1021.002</td></tr>
   <tr><td>Failed console logons followed by success</td><td class="sev l">Low / Medium</td><td>3+ bad passwords at the keyboard (types 2 / 7 / 11) then success; notes cached credentials and remote-access software on the host. Medium from 10.</td><td>T1110</td></tr>
   <tr><td>After-hours interactive / RDP logon</td><td class="sev l">Low</td><td>Interactive or RDP logon outside business hours in the host's zone; names the weekday and why.</td><td>T1078</td></tr>
   <tr><td>Privileged remote logon</td><td class="sev l">Low</td><td>A network / RDP logon that received special privileges (4672).</td><td>T1078.002</td></tr>
@@ -287,7 +291,7 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
 <h2 id="sources">Event sources</h2>
 <table>
   <tr><th>Log</th><th>Event ids</th></tr>
-  <tr><td>Security</td><td>4624, 4625, 4634, 4647, 4648, 4672, 4688, 4697, 4698 / 4699 / 4702, 4720-4726, 4728 / 4732 / 4756, 4740, 4768 / 4769 / 4771 / 4776, 4778 / 4779, 5140 / 5145, 1102, 1100, 4608 / 4609</td></tr>
+  <tr><td>Security</td><td>4624, 4625, 4634, 4647, 4648, 4672, 4688, 4697, 4698 / 4699 / 4702, 4720-4726, 4728 / 4732 / 4756 and 4729 / 4733 / 4757, 4781, 4740, 4768 / 4769 / 4771 / 4776, 4778 / 4779, 5140 / 5145, 1102, 1100, 4608 / 4609</td></tr>
   <tr><td>System</td><td>7045, 7036, 7040, 104, 6013 (time zone), 6005 / 6006 / 6008 (boot, shutdown, unexpected shutdown), 1074 (restart / shutdown initiator), Kernel-Power 41</td></tr>
   <tr><td>TerminalServices</td><td>LocalSessionManager 21-25, 39, 40, 41; RemoteConnectionManager 1149; RdpCoreTS 131, 140; RDPClient 1024, 1102</td></tr>
   <tr><td>WinRM</td><td>6, 91, 142, 161, 169</td></tr>
@@ -303,9 +307,10 @@ LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machin
 
   --tz &lt;id&gt;        after-hours zone: auto (default, per host from event 6013), a Windows or IANA id,
                    a fixed offset such as UTC+10:00, local or utc
-  --hours 7-19     business hours        --no-weekend     weekends are not after hours
+  --hours 7-19     business hours (22-6 = a shift across midnight)    --no-weekend   weekends are not after hours
   --keep-noise     keep machine / system-account logon noise
   --from &lt;utc&gt;     --to &lt;utc&gt;           ISO-8601 import window
+  --no-hash        do not record the SHA-256 and size of each source log in files.csv
   --no-html        skip the HTML reports  -q              no per-file progress   -v   version</code></pre>
 <table>
   <tr><th>Exit code</th><th>Meaning</th></tr>
@@ -316,7 +321,7 @@ LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machin
   <tr><td>4</td><td>None of the inputs could be read (not EVTX, corrupt, access denied).</td></tr>
 </table>
 <p>Results are written to a staging folder and published only when the run succeeds, <code>summary.json</code> last. After any failure the output folder still holds the previous run's files; <code>run.log</code> always describes the latest attempt.</p>
-<p>The HTA also accepts a command line: <code>mshta LoginActivityTriage.hta "&lt;evtxDir | file.evtx | live | resultsDir&gt;" ["&lt;outDir&gt;"] [/auto] [/tz:&lt;id&gt;] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]</code>. A results folder opens in the viewer; an EVTX source is prefilled and, with <code>/auto</code>, processed. <code>/from</code> <code>/to</code> set the date window.</p>
+<p>The HTA also accepts a command line: <code>mshta LoginActivityTriage.hta "&lt;evtxDir | file.evtx | live | resultsDir&gt;" ["&lt;outDir&gt;"] [/auto] [/tz:&lt;id&gt;] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd] [/offline]</code>. A results folder opens in the viewer; an EVTX source is prefilled and, with <code>/auto</code>, processed. <code>/from</code> <code>/to</code> set the date window. <code>/offline</code> (or the environment variable <code>LAT_OFFLINE=1</code>) keeps the app off the network: no GitHub update check and no downloads &mdash; for an analysis machine without internet access. Otherwise <strong>Update</strong> and <strong>Update engine</strong> verify each download against the release's <code>SHA256SUMS.txt</code> and discard a mismatch.</p>
 
 <h2 id="outputs">Output files</h2>
 <table>
@@ -326,7 +331,7 @@ LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machin
   <tr><td><code>sessions.csv</code></td><td>Stitched remote sessions with evidence and confidence.</td></tr>
   <tr><td><code>findings.csv</code></td><td>Rule hits with severity, MITRE ids, description and reasoning.</td></tr>
   <tr><td><code>users.csv</code> <code>sourceips.csv</code> <code>hosts.csv</code> <code>remotehosts.csv</code></td><td>Pivots with heuristic scores.</td></tr>
-  <tr><td><code>files.csv</code> <code>summary.json</code> <code>run.log</code></td><td>What was read, run settings and provenance, and the engine log.</td></tr>
+  <tr><td><code>files.csv</code> <code>summary.json</code> <code>run.log</code></td><td>What was read &mdash; with the <strong>SHA-256 and size of every source log</strong> as it was analysed (chain of custody; <code>--no-hash</code> skips it) &mdash; run settings and provenance, and the engine log.</td></tr>
   <tr><td><code>report-findings.html</code> <code>report-sessions.html</code></td><td>Self-contained reports for attaching to case notes.</td></tr>
   <tr><td><code>runinfo.json</code> <code>knownhosts.csv</code> exports</td><td>Written by the HTA: run provenance (read by the DFIR Artifact Finder), your Known hosts list, and <em>Export view</em> files.</td></tr>
 </table>
@@ -352,6 +357,8 @@ LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machin
   <tr><td><em>engine: will not start</em></td><td>Install the .NET 8 (or newer) runtime; the log shows the error.</td></tr>
   <tr><td>"This is a results folder at a path of &hellip; characters (over 259)"</td><td>Results can be <em>produced</em> at any path, but the app cannot <em>load</em> them from a path over 259 characters. Copy the results folder somewhere shorter and use <strong>Load results&hellip;</strong>.</td></tr>
   <tr><td>"The input path contains a quote or a control character"</td><td>A Windows path cannot contain <code>"</code> or line breaks; the pasted text is not a path. Fix it and Process again.</td></tr>
+  <tr><td>"SHA-256 mismatch" on Update / Update engine</td><td>The downloaded file does not match the release's <code>SHA256SUMS.txt</code> and was discarded. Retry; if it persists, download the asset from the GitHub release page by hand and compare its hash.</td></tr>
+  <tr><td>"the copy's SHA-256 … does not match files.csv"</td><td>The source log differs from the one the engine analysed (the evidence was modified or replaced since the run). Re-acquire the evidence or Process again, and note it in the case record.</td></tr>
   <tr><td>"The engine exited 0 but did not publish a new summary.json for this run"</td><td>The console closed or was killed before the engine published its results; the folder still holds the previous run's files, which were not loaded. Run again and keep the console open.</td></tr>
   <tr><td>"None of the input logs could be read"</td><td>The files are not EVTX, are corrupt, or access was denied; see the Import log and <code>run.log</code>.</td></tr>
   <tr><td>"&hellip;is open in another program"</td><td>Close the results CSV in Timeline Explorer or Excel and process again; the previous results were left intact.</td></tr>
@@ -364,7 +371,7 @@ LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machin
 </table>
 
 <footer>
-  Login Activity Triage 0.3.3 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
+  Login Activity Triage 0.4.0 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
   <a href="https://github.com/bpmorris22/LoginActivityTriage">github.com/bpmorris22/LoginActivityTriage</a> &middot;
   see <code>CHANGELOG.md</code> for what changed in each version.
 </footer>

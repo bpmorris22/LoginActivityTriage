@@ -13,6 +13,10 @@ public sealed class ImportedFileResult
     public int Filtered { get; set; }
     public bool Failed { get; set; }
     public string? Error { get; set; }
+    /// <summary>SHA-256 (lower-case hex) of the source file as it was read; null for live channels or when hashing was skipped.</summary>
+    public string? Sha256 { get; set; }
+    /// <summary>Size of the source file in bytes; null for live channels.</summary>
+    public long? SizeBytes { get; set; }
 }
 
 /// <summary>Aggregated result of an import run, surfaced to the import summary UI.</summary>

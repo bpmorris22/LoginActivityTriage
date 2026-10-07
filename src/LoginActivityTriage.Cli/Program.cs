@@ -47,6 +47,7 @@ internal static class Program
         public DateTimeOffset? From, To;
         public bool Quiet;
         public bool Html = true;
+        public bool Hash = true;                            // SHA-256 of every source file into files.csv
     }
 
     private static TextWriter? _log;
@@ -153,7 +154,9 @@ internal static class Program
             From = o.From,
             To = o.To,
             Keep = o.KeepNoise ? null : e => !NoiseFilter.IsRoutineNoise(e),
+            HashFiles = o.Hash,
         };
+        Say($"Hashes  : {(o.Hash && !o.Live ? "SHA-256 and size of every source file recorded in files.csv" : "not recorded")}");
         var lastFile = -1;
         var progress = new SyncProgress<ImportProgress>(p =>
         {
@@ -263,6 +266,7 @@ internal static class Program
             businessHours = $"{o.StartHour:00}:00-{o.EndHour:00}:00",
             weekendIsAfterHours = o.Weekend,
             noiseDropped = !o.KeepNoise,
+            fileHashes = o.Hash && !o.Live ? "SHA-256" : null,
             from = o.From is null ? null : CsvExporter.Ts(o.From.Value),
             to = o.To is null ? null : CsvExporter.Ts(o.To.Value),
             files = import.FilesProcessed,
@@ -317,6 +321,7 @@ internal static class Program
                 case "--to": o.To = ParseUtc(Next()); break;
                 case "-q": case "--quiet": o.Quiet = true; break;
                 case "--no-html": o.Html = false; break;
+                case "--no-hash": o.Hash = false; break;
                 default: throw new ArgumentException($"Unknown argument '{a}'.");
             }
         }
@@ -342,13 +347,14 @@ internal static class Program
         }
     }
 
+    /// <summary>"7-19" is an ordinary day; "22-6" is a shift that crosses midnight (business hours 22:00-06:00).</summary>
     private static (int, int) ParseHours(string v)
     {
         var parts = v.Split('-');
         if (parts.Length == 2 && int.TryParse(parts[0], out var s) && int.TryParse(parts[1], out var e) &&
-            s is >= 0 and <= 23 && e is >= 1 and <= 24 && s < e)
+            s is >= 0 and <= 23 && e is >= 0 and <= 24 && s != e)
             return (s, e);
-        throw new ArgumentException("--hours expects START-END in whole hours, e.g. 7-19.");
+        throw new ArgumentException("--hours expects START-END in whole hours, e.g. 7-19 (or 22-6 for a shift that crosses midnight).");
     }
 
     private static DateTimeOffset ParseUtc(string v) =>
@@ -373,12 +379,13 @@ Options:
                      offset from its System 6013 events (UTC where none). Or force one zone:
                      Windows id (""Taipei Standard Time""), IANA id (Asia/Taipei), fixed
                      offset (UTC+08:00), 'local' (this machine) or 'utc'.
-  --hours 7-19       Business hours in that time zone (default 7-19).
+  --hours 7-19       Business hours in that time zone (default 7-19; 22-6 = a shift across midnight).
   --no-weekend       Do not treat Saturday / Sunday as after hours.
   --keep-noise       Keep machine-account / SYSTEM / service logon, logoff and ticket events.
   --from <utc>       Only events at or after this ISO-8601 time.
   --to <utc>         Only events at or before this ISO-8601 time.
   --no-html          Skip the HTML reports.
+  --no-hash          Do not record the SHA-256 and size of each source file in files.csv.
   -q, --quiet        Do not print per-file progress.
   -v, --version      Print the version.
 

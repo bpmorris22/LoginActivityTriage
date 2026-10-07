@@ -237,7 +237,7 @@ public static class PivotBuilder
                     UsedOthersCreds = usedOthers,
                     CredsUsedByOthers = byOthers,
                     Privileged = priv,
-                    GroupChanges = g.Count(e => e.EventId is 4728 or 4732 or 4756),
+                    GroupChanges = g.Count(e => e.EventId is 4728 or 4732 or 4756 or 4729 or 4733 or 4757),
                     // System / machine accounts are listed but not ranked as suspicious.
                     SuspicionScore = system ? 0 : Score(failed, hosts, rdp, priv, usedOthers + byOthers, rex, rat),
                     Hosts = Top(all, e => HostKey.Of(e.Hostname)),

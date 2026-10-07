@@ -109,7 +109,19 @@ public sealed class SecurityEventNormalizer : IEventNormalizer
             case 4728:
             case 4732:
             case 4756:
+            case 4729:
+            case 4733:
+            case 4757:
                 GroupMember(e, ev);
+                break;
+            case 4781:
+                // Account renamed: the row is about the account under its NEW name; the old name is kept in Details.
+                e.TargetUserName = ev.Get("NewTargetUserName") ?? ev.Get("TargetUserName");
+                e.TargetDomain = ev.Get("TargetDomainName") ?? e.SubjectDomain;
+                e.Sid = ev.Get("TargetSid");
+                e.Details = NormalizerBase.Join(
+                    ev.Get("OldTargetUserName") is { } old ? $"Renamed from {old}" : null,
+                    e.SubjectUserName is null ? null : $"By {e.SubjectDomain}\\{e.SubjectUserName}");
                 break;
             case 4768:
             case 4769:
@@ -232,6 +244,11 @@ public sealed class SecurityEventNormalizer : IEventNormalizer
                 ? new(RemoteTechnique.Rdp, "RDP client (explicit credentials)", true)
             : spn.StartsWith("HTTP/", StringComparison.OrdinalIgnoreCase) || spn.StartsWith("WSMAN/", StringComparison.OrdinalIgnoreCase)
                 ? new(RemoteTechnique.PsRemoting, "WinRM client (explicit credentials)", true)
+            // cifs/ = SMB (file / admin shares, lateral tool transfer); RPCSS/ = DCOM / WMI endpoint mapper.
+            : spn.StartsWith("cifs/", StringComparison.OrdinalIgnoreCase)
+                ? new(RemoteTechnique.Smb, "SMB client (explicit credentials)", true)
+            : spn.StartsWith("RPCSS/", StringComparison.OrdinalIgnoreCase)
+                ? new(RemoteTechnique.Wmi, "WMI / DCOM client (explicit credentials)", true)
             : null;
         NormalizerBase.Apply(e, m);
     }

@@ -2,7 +2,7 @@
   <!-- Shared version / metadata for every project. Bump Version for each release; the
        command-line tool reports it (and the HTA compares it) as the tool version. -->
   <PropertyGroup>
-    <Version>0.3.3</Version>
+    <Version>0.4.0</Version>
     <Authors>Ben Morris</Authors>
     <Product>Login Activity Triage</Product>
     <Copyright>Copyright (c) 2026 Ben Morris</Copyright>

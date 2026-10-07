@@ -28,6 +28,9 @@ public sealed class ImportOptions
 
     /// <summary>Optional predicate; events for which it returns false are dropped (e.g. noise accounts).</summary>
     public Func<NormalizedEvent, bool>? Keep { get; init; }
+
+    /// <summary>Record the SHA-256 and size of every source file in the import summary (chain of custody).</summary>
+    public bool HashFiles { get; init; } = true;
 }
 
 /// <summary>
@@ -140,6 +143,7 @@ public sealed class EvtxImporter
 
             result.Hostname = src.IsChannel ? Environment.MachineName : InferHostname(src.Name);
             result.LogSource = src.IsChannel ? FriendlyChannel(src.Name) : InferLogSource(src.Name);
+            if (!src.IsChannel && options.HashFiles) Fingerprint(src.Name, result);
             var context = new NormalizationContext
             {
                 FallbackHostname = result.Hostname,
@@ -238,6 +242,25 @@ public sealed class EvtxImporter
         });
 
         return summary;
+    }
+
+    /// <summary>
+    /// SHA-256 and size of a source file, read once from the evidence (never written), for files.csv:
+    /// the chain-of-custody record of exactly which bytes were analysed. A file that cannot be hashed
+    /// is still imported; the reason goes into the Error column without marking the file failed.
+    /// </summary>
+    private static void Fingerprint(string path, ImportedFileResult result)
+    {
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 20, FileOptions.SequentialScan);
+            result.SizeBytes = fs.Length;
+            result.Sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fs)).ToLowerInvariant();
+        }
+        catch (Exception ex)
+        {
+            result.Error = $"SHA-256 not computed: {ex.Message}";
+        }
     }
 
     /// <summary>

@@ -554,6 +554,7 @@ public sealed class RemoteSessionBuilder
         [RemoteTechnique.Wmi] = new[] { "wmic.exe", "powershell.exe", "pwsh.exe" },
         [RemoteTechnique.ScheduledTask] = new[] { "schtasks.exe", "at.exe" },
         [RemoteTechnique.RemoteServiceControl] = new[] { "sc.exe" },
+        [RemoteTechnique.Smb] = new[] { "net.exe", "net1.exe", "explorer.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "robocopy.exe", "xcopy.exe" },
     };
 
     /// <summary>

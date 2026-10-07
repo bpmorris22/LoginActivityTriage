@@ -17,6 +17,8 @@ public static class RemoteTechnique
     public const string ServiceInstall = "Service install";
     public const string RemoteServiceControl = "Remote service control";
     public const string AdminShare = "SMB admin share";
+    /// <summary>Outbound SMB with explicit credentials (4648 with a cifs/ SPN): file or admin shares on another host.</summary>
+    public const string Smb = "SMB";
     public const string LogCleared = "Log cleared";
     public const string Ssh = "SSH";
     /// <summary>Third-party remote access / RMM software (AnyDesk, TeamViewer, Splashtop, ScreenConnect...).</summary>

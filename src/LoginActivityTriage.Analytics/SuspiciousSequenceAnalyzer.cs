@@ -101,6 +101,8 @@ public sealed class SuspiciousSequenceAnalyzer
         findings.AddRange(SourceIpToManyHosts(ordered));
         findings.AddRange(UserToManyHosts(ordered));
         findings.AddRange(ExternalRdp(ordered, sessions));
+        findings.AddRange(ExternalNetworkLogon(ordered));
+        findings.AddRange(ExternalRdpConnection(ordered));
         findings.AddRange(NewCredentialsLogon(ordered));
         findings.AddRange(LocalAccountNetworkLogon(ordered));
         findings.AddRange(ExplicitCredentials(ordered));
@@ -185,6 +187,8 @@ public sealed class SuspiciousSequenceAnalyzer
                      "This host opened (or tried to open) WinRM sessions to other systems."),
                 RemoteTechnique.Rdp => (FindingSeverity.Low, "Outbound RDP from this host", "T1021.001",
                     "This host connected to other systems over RDP."),
+                RemoteTechnique.Smb => (FindingSeverity.Low, "Outbound SMB with explicit credentials from this host", "T1021.002, T1570",
+                    "This host used explicit credentials for file or admin shares on other systems (4648 with a cifs/ SPN) - how tools are staged and data collected across hosts."),
                 _ => (FindingSeverity.Low, $"Outbound {g.Key.Technique} from this host", "T1021", "This host accessed other systems."),
             };
             // One entry per destination: attempts to an address count together whether or not a
@@ -562,6 +566,96 @@ public sealed class SuspiciousSequenceAnalyzer
         }
     }
 
+    /// <summary>
+    /// A successful network logon (type 3, or 8 with a clear-text password) from a routable address:
+    /// SMB, WinRM, RPC or another service on this host is reachable from the internet and the
+    /// credentials worked. One finding per (address, host, account).
+    /// </summary>
+    private static IEnumerable<Finding> ExternalNetworkLogon(List<NormalizedEvent> events) =>
+        events.Where(e => e.EventId == 4624 && e.LogonType is 3 or 8 && !e.IsNoiseAccount && IpUtil.IsPublic(e.SourceIp))
+            .GroupBy(e => (e.SourceIp!, HostKey.Of(e.Hostname), UserKey.Bare(e.TargetUserName).ToLowerInvariant()))
+            .Select(g =>
+            {
+                var first = g.First();
+                return new Finding
+                {
+                    Severity = FindingSeverity.High,
+                    RuleName = "Network logon from external address",
+                    Description = $"{first.TargetUserName} logged on to {first.Hostname} over the network (type {first.LogonType}, {first.AuthenticationPackage ?? "unknown package"}) " +
+                                  $"from public address {g.Key.Item1}" + (g.Count() > 1 ? $", {g.Count()} times" : ""),
+                    Timestamp = first.Timestamp,
+                    User = first.TargetUserName,
+                    SourceIp = g.Key.Item1,
+                    Host = first.Hostname,
+                    RelatedEventIds = "4624",
+                    Reasoning = "A successful network logon from a non-RFC1918 address means SMB, WinRM, RPC or another service on this host is reachable " +
+                                "from the internet (or through a VPN that does not NAT), and the credentials worked. Check what the session did next.",
+                    Mitre = "T1133, T1021",
+                    Count = g.Count(),
+                    SessionRef = g.Select(e => e.RemoteSessionRef).FirstOrDefault(r => r is not null),
+                };
+            });
+
+    /// <summary>
+    /// RDP reached from a routable address with no session logon to show for it (Security log missing,
+    /// or the connection never got past authentication): NLA authentication (RCM 1149) is High per
+    /// address and account; bare connections (RdpCoreTS 131 / 140) are one Medium finding per host,
+    /// so an exposed server scanned by many addresses does not drown the list.
+    /// </summary>
+    private static IEnumerable<Finding> ExternalRdpConnection(List<NormalizedEvent> events)
+    {
+        var loggedOn = events
+            .Where(e => ((e.EventId == 4624 && e.LogonType is 10 or 12) || (e.EventId == 21 && e.Technique == RemoteTechnique.Rdp)) && IpUtil.IsPublic(e.SourceIp))
+            .Select(e => (e.SourceIp!, HostKey.Of(e.Hostname))).ToHashSet();   // ExternalRdp already reports these
+        var hits = events.Where(e => e.Technique == RemoteTechnique.Rdp && e.EventId is 1149 or 131 or 140 && IpUtil.IsPublic(e.SourceIp) &&
+                                     !loggedOn.Contains((e.SourceIp!, HostKey.Of(e.Hostname)))).ToList();
+
+        foreach (var g in hits.Where(e => e.EventId == 1149).GroupBy(e => (e.SourceIp!, HostKey.Of(e.Hostname), UserKey.Bare(e.TargetUserName).ToLowerInvariant())))
+        {
+            var first = g.First();
+            yield return new Finding
+            {
+                Severity = FindingSeverity.High,
+                RuleName = "RDP authentication from external address",
+                Description = $"{first.TargetUserName} passed RDP network-level authentication on {first.Hostname} from public address {g.Key.Item1}" +
+                              (g.Count() > 1 ? $" {g.Count()} times" : "") + "; no session logon is recorded in the collected logs",
+                Timestamp = first.Timestamp,
+                User = first.TargetUserName,
+                SourceIp = g.Key.Item1,
+                Host = first.Hostname,
+                RelatedEventIds = "1149",
+                Reasoning = "RDP is reachable from the internet and these credentials passed NLA. Without the Security log (or with the session never " +
+                            "completing) the 1149 is the only trace of the access attempt; treat it as a probable logon until the Security log says otherwise.",
+                Mitre = "T1133, T1021.001",
+                Count = g.Count(),
+                SessionRef = first.RemoteSessionRef,
+            };
+        }
+
+        foreach (var g in hits.Where(e => e.EventId is 131 or 140).GroupBy(e => HostKey.Of(e.Hostname)))
+        {
+            var first = g.OrderBy(e => e.Timestamp).First();
+            var addresses = g.Select(e => e.SourceIp!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var failed = g.Count(e => e.EventId == 140);
+            yield return new Finding
+            {
+                Severity = FindingSeverity.Medium,
+                RuleName = "RDP reachable from the internet",
+                Description = $"{first.Hostname} accepted {g.Count()} RDP connection(s) from {addresses.Count} public address(es)" +
+                              (failed > 0 ? $", {failed} with bad credentials" : "") + $": {string.Join(", ", addresses.Take(5))}" +
+                              (addresses.Count > 5 ? $" and {addresses.Count - 5} more" : ""),
+                Timestamp = first.Timestamp,
+                SourceIp = addresses.Count == 1 ? addresses[0] : null,
+                Host = first.Hostname,
+                RelatedEventIds = string.Join(",", g.Select(e => e.EventId).Distinct().OrderBy(i => i)),
+                Reasoning = "RdpCoreTS logs every TCP connection to the RDP listener (131) and every bad-password attempt (140). Connections from " +
+                            "routable addresses mean the listener is exposed; successful logons from these addresses would appear as separate findings.",
+                Mitre = "T1133, T1110",
+                Count = g.Count(),
+            };
+        }
+    }
+
     private static IEnumerable<Finding> NewCredentialsLogon(List<NormalizedEvent> events) =>
         events.Where(e => e.EventId == 4624 && e.LogonType == 9 &&
                           string.Equals(e.LogonProcess, "seclogo", StringComparison.OrdinalIgnoreCase))
@@ -646,13 +740,37 @@ public sealed class SuspiciousSequenceAnalyzer
     private static IEnumerable<Finding> PrivilegedGroupChanges(List<NormalizedEvent> events)
     {
         var created = events.Where(e => e.EventId == 4720).ToList();
-        foreach (var e in events.Where(e => e.EventId is 4728 or 4732 or 4756 && AccountClassifier.IsPrivilegedGroup(e.GroupName)))
+        var added = events.Where(e => e.EventId is 4728 or 4732 or 4756 && AccountClassifier.IsPrivilegedGroup(e.GroupName)).ToList();
+
+        // Removals: housekeeping on its own (Medium); the add-use-remove pattern (High) when the same
+        // member was added to the same group on the same host within the previous day.
+        foreach (var e in events.Where(e => e.EventId is 4729 or 4733 or 4757 && AccountClassifier.IsPrivilegedGroup(e.GroupName)))
+        {
+            var add = added.LastOrDefault(a => HostKey.Same(a.Hostname, e.Hostname) &&
+                                               string.Equals(a.GroupName, e.GroupName, StringComparison.OrdinalIgnoreCase) &&
+                                               SameMemberAccount(a, e) && e.Timestamp >= a.Timestamp && e.Timestamp - a.Timestamp <= TimeSpan.FromDays(1));
+            yield return new Finding
+            {
+                Severity = add is not null ? FindingSeverity.High : FindingSeverity.Medium,
+                RuleName = add is not null ? "Privileged group membership added then removed" : "Member removed from privileged group",
+                Description = $"{MemberText(e)} removed from {e.GroupName} on {e.Hostname} by {e.SubjectDomain}\\{e.SubjectUserName}" +
+                              (add is null ? "" : $" ({(e.Timestamp - add.Timestamp).TotalMinutes:0} min after being added by {add.SubjectDomain}\\{add.SubjectUserName})"),
+                Timestamp = e.Timestamp,
+                User = e.TargetUserName,
+                Host = e.Hostname,
+                RelatedEventIds = add is null ? e.EventId.ToString() : $"{add.EventId},{e.EventId}",
+                Reasoning = add is not null
+                    ? "Granting administrative rights briefly and taking them back is how an operator - or an attacker - covers a privileged action and leaves the group looking untouched. The add is reported separately; look at what the account did in between."
+                    : "Removal from an administrative group is usually housekeeping, but it also ends an attacker's access or hides an earlier grant. Check who removed whom and when the membership was granted.",
+                Mitre = "T1098",
+            };
+        }
+
+        foreach (var e in added)
         {
             var newAccount = created.FirstOrDefault(c =>
-                SameCreatedAccount(c, e) && e.Timestamp >= c.Timestamp && e.Timestamp - c.Timestamp <= TimeSpan.FromDays(1));
-            // The member's SID stays in the text once a name is resolved for it (local members log only the SID).
-            var member = e.TargetUserName is null ? e.Sid
-                : e.Sid is null || SidResolver.IsSidNamed(e) ? e.TargetUserName : $"{e.TargetUserName} ({e.Sid})";
+                SameMemberAccount(c, e) && e.Timestamp >= c.Timestamp && e.Timestamp - c.Timestamp <= TimeSpan.FromDays(1));
+            var member = MemberText(e);
             yield return new Finding
             {
                 Severity = newAccount is not null ? FindingSeverity.Critical : FindingSeverity.High,
@@ -670,17 +788,22 @@ public sealed class SuspiciousSequenceAnalyzer
     }
 
     /// <summary>
-    /// The 4720 that created the member added by <paramref name="member"/>. When both events carry a
-    /// SID the SIDs decide: two local accounts with the same name on two hosts (backup, svc,
-    /// Administrator...) are different accounts. The name is used only when a SID is missing, and
-    /// then domain-aware, so HOSTA\backup is not HOSTB\backup.
+    /// Whether two account events (a 4720 creation, a group add, a group removal) concern the same
+    /// account. When both carry a SID the SIDs decide: two local accounts with the same name on two
+    /// hosts (backup, svc, Administrator...) are different accounts. The name is used only when a SID
+    /// is missing, and then domain-aware, so HOSTA\backup is not HOSTB\backup.
     /// </summary>
-    private static bool SameCreatedAccount(NormalizedEvent created, NormalizedEvent member)
+    private static bool SameMemberAccount(NormalizedEvent a, NormalizedEvent b)
     {
-        if (created.Sid is not null && member.Sid is not null)
-            return string.Equals(created.Sid.Trim(), member.Sid.Trim(), StringComparison.OrdinalIgnoreCase);
-        return AccountKey.SameAccount(created.TargetUserName, created.TargetDomain, member.TargetUserName, member.TargetDomain);
+        if (a.Sid is not null && b.Sid is not null)
+            return string.Equals(a.Sid.Trim(), b.Sid.Trim(), StringComparison.OrdinalIgnoreCase);
+        return AccountKey.SameAccount(a.TargetUserName, a.TargetDomain, b.TargetUserName, b.TargetDomain);
     }
+
+    /// <summary>The member as text: its name, with the SID beside it once a name was resolved for a SID-only member.</summary>
+    private static string? MemberText(NormalizedEvent e) =>
+        e.TargetUserName is null ? e.Sid
+            : e.Sid is null || SidResolver.IsSidNamed(e) ? e.TargetUserName : $"{e.TargetUserName} ({e.Sid})";
 
     private static IEnumerable<Finding> Kerberoasting(List<NormalizedEvent> events)
     {
@@ -790,9 +913,18 @@ public sealed class SuspiciousSequenceAnalyzer
     private static string LocalDay(DateTimeOffset local) =>
         local.ToString("dddd yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
-    private bool IsAfterHours(DateTimeOffset local) =>
-        local.Hour < _o.BusinessStartHour || local.Hour >= _o.BusinessEndHour ||
-        (_o.WeekendIsAfterHours && local.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday);
+    /// <summary>
+    /// Outside business hours: start &lt; end is the ordinary day (7-19); start &gt; end is a shift that
+    /// crosses midnight (22-6 = business hours 22:00-06:00, so after hours is 06:00-22:00).
+    /// </summary>
+    private bool IsAfterHours(DateTimeOffset local)
+    {
+        if (_o.WeekendIsAfterHours && local.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday) return true;
+        var h = local.Hour;
+        return _o.BusinessStartHour < _o.BusinessEndHour
+            ? h < _o.BusinessStartHour || h >= _o.BusinessEndHour
+            : h < _o.BusinessStartHour && h >= _o.BusinessEndHour;
+    }
 
     private static IEnumerable<Finding> PrivilegedRemoteLogons(List<NormalizedEvent> events)
     {

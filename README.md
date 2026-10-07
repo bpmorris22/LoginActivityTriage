@@ -38,16 +38,18 @@ below show a fictional incident; every name and address is invented.
 | **Remote scheduled tasks** | 4698 / 4702 created from a network logon, Impacket atexec command pattern, `atsvc` pipe. |
 | **Remote service creation** | Any 7045 / 4697 tied to a network logon or preceded by remote SCM / admin-share access. |
 | **Admin-share drops** | Executables / scripts written to `ADMIN$` / `C$` not explained by the above. |
-| **Outbound (this host as source)** | `psexec.exe`, `mstsc /v`, WinRM 6 (target from the connection string), RDPClient 1024/1102, 4648 with an `HTTP/` or `TERMSRV/` SPN, `wmic /node:`, `schtasks /s`, `sc \\host`, `Invoke-Command -ComputerName`. Each RDP attempt is its own session; the 4648 credential hand-off that follows supplies the user, the credentials used and the target name. Hyper-V VMConnect sessions are recognised and not flagged. |
+| **Outbound (this host as source)** | `psexec.exe`, `mstsc /v`, WinRM 6 (target from the connection string), RDPClient 1024/1102, 4648 with an `HTTP/` / `WSMAN/`, `TERMSRV/`, `cifs/` (SMB) or `RPCSS/` (WMI / DCOM) SPN, `wmic /node:`, `schtasks /s`, `sc \\host`, `Invoke-Command -ComputerName`. Each RDP attempt is its own session; the 4648 credential hand-off that follows supplies the user, the credentials used and the target name. Hyper-V VMConnect sessions are recognised and not flagged. |
 | **Remote access / RMM software** | Service installs and process starts of Splashtop (incl. SOS), AnyDesk, TeamViewer, ScreenConnect, Atera, RustDesk, NetSupport, LogMeIn, GoTo, Kaseya, N-able, Zoho Assist, MeshCentral, VNC, Radmin, SimpleHelp, BeyondTrust and others. High when run from a temp / user-writable folder or during an inbound remote session. |
 
 **Findings** (each with severity, MITRE ATT&CK ids, count and reasoning): every inbound
 remote-exec session; service with a command-line ImagePath; event log cleared (1102 / 104);
 failed logons followed by success (per IP + user); password spray; failure bursts; RDP pre-auth
-connection floods; RDP from a public address; one IP / one user logging on to many hosts;
+connection floods; RDP logons, RDP NLA authentications and network (SMB / WinRM / RPC) logons from a
+public address, RDP listeners reached from the internet; one IP / one user logging on to many hosts;
 local-account network logon over NTLM; NewCredentials (type 9 / seclogo — runas /netonly or
 pass-the-hash); alternate credentials (4648) against remote hosts; members — especially new
-accounts — added to privileged groups; Kerberoasting (bulk RC4 service tickets); DC-side ticket
+accounts — added to privileged groups, members removed (and the added-then-removed pattern);
+Kerberoasting (bulk RC4 service tickets); DC-side ticket
 fan-out; lockouts with caller computer; remote access software; after-hours interactive / RDP logons in each
 host's own time zone (System event 6013); privileged remote logons.
 
@@ -75,8 +77,12 @@ ran inside a remote logon session — "what did they run" without importing ever
    tables always hold the same dates (`/from` `/to` set both).
 
 ```
-mshta "LoginActivityTriage.hta" "<evtxDir | file.evtx | live | resultsDir>" ["<outDir>"] [/auto] [/tz:<id>] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]
+mshta "LoginActivityTriage.hta" "<evtxDir | file.evtx | live | resultsDir>" ["<outDir>"] [/auto] [/tz:<id>] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd] [/offline]
 ```
+
+`/offline` (or `LAT_OFFLINE=1` in the environment) keeps the app off the network: no GitHub update
+check, no downloads. Otherwise **Update** and **Update engine** verify what they download against the
+release's `SHA256SUMS.txt`.
 
 ## Engine (CLI)
 
@@ -87,9 +93,10 @@ LoginActivityTriageCli --live -o <outDir> [options]          # this machine (run
 
   --tz <id>        after-hours zone: auto (default: each host's offset from System 6013, UTC if none),
                    or force one: Windows id ("Taipei Standard Time"), IANA id, UTC+08:00, local or utc
-  --hours 7-19     business hours in that zone        --no-weekend   weekends are not after hours
+  --hours 7-19     business hours in that zone (22-6 = a shift across midnight)   --no-weekend   weekends are not after hours
   --keep-noise     keep machine / SYSTEM / service logon, logoff and ticket events
   --from / --to    ISO-8601 UTC window                 --no-html      skip HTML reports
+  --no-hash        do not record the SHA-256 and size of each source log in files.csv
 ```
 
 Outputs (UTF-8 CSV, ISO-8601 UTC `…Z` timestamps, spreadsheet-formula values neutralised):
@@ -102,7 +109,7 @@ Outputs (UTF-8 CSV, ISO-8601 UTC `…Z` timestamps, spreadsheet-formula values n
 | `findings.csv` | rule hits |
 | `users.csv` `sourceips.csv` `hosts.csv` | pivots with a heuristic suspicion score (users: `UsedOthersCreds` / `CredsUsedByOthers` for both sides of a 4648 hand-off; `RemoteAccessTool` separate from `RemoteExec`) |
 | `remotehosts.csv` | one row per destination the collected hosts connected to (outbound sessions, 4648 targets), address and resolved name merged |
-| `files.csv`, `run.log`, `summary.json` | what was read, duplicates / noise / unreadable counts, errors |
+| `files.csv`, `run.log`, `summary.json` | what was read, with the SHA-256 and size of every source log (chain of custody), duplicates / noise / unreadable counts, errors |
 | `report-findings.html`, `report-sessions.html` | self-contained reports |
 
 Exit codes: 0 ok, 1 usage, 2 no EVTX found, 3 fatal, 4 no input could be read.

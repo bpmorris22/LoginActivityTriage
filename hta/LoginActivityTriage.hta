@@ -26,7 +26,8 @@
         [--tz <id|local|utc>] [--hours S-E] [--no-weekend] [--keep-noise] [--from <utc>] [--to <utc>]
     writes to <outDir>: events.csv timeline.csv (the triage subset the Timeline loads) sessions.csv findings.csv
                         users.csv (Sid column 0.3.2+) sourceips.csv hosts.csv
-                        remotehosts.csv (0.2.1+; older results show "not found" on the Remote hosts tab) files.csv
+                        remotehosts.csv (0.2.1+; older results show "not found" on the Remote hosts tab)
+                        files.csv (SizeBytes + Sha256 of every source log 0.4.0+; the Event Viewer copy is checked against it)
                         summary.json run.log report-findings.html report-sessions.html
     Exit codes: 0 ok, 1 usage, 2 no EVTX found, 3 fatal, 4 no input could be read.
     Results are staged and published only on success (summary.json last); on failure the output
@@ -41,7 +42,8 @@
     * output: <appFolder>\_Processed\<Hostname>\LoginActivityTriage\ (hostname required)
     * runinfo.json provenance + triage summary appended after each run
     * IOC.txt next to the .hta auto-merged into the IOC box at launch
-    * CLI: mshta LoginActivityTriage.hta "<evtxDir|evtx|resultsDir|csv>" ["<outDir>"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd] [/tz:<id>]
+    * CLI: mshta LoginActivityTriage.hta "<evtxDir|evtx|resultsDir|csv>" ["<outDir>"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd] [/tz:<id>] [/offline]
+    * /offline (or environment variable LAT_OFFLINE=1): no GitHub update check, no engine / app downloads (0.4.0+)
 -->
 <style>
   html{margin:0;height:100%;background:#0d1117}
@@ -286,7 +288,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.3.3";
+var APP_VERSION = "0.4.0";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -518,25 +520,36 @@ function checkEngine(){
   return !!m;
 }
 function downloadEngine(){
+  if(OFFLINE){ setStatus("Offline mode (/offline or LAT_OFFLINE): downloads are disabled. Copy "+ENGINE_EXE+" next to this .hta by hand.","err"); return; }
   var dest=htaFolder()+"\\"+ENGINE_EXE, dq=String(dest).replace(/'/g,"''");
   var fso=new ActiveXObject("Scripting.FileSystemObject"), ps1=fso.GetSpecialFolder(2)+"\\latdl_"+uid()+".ps1";
   // The engine of THIS app's release (the two are versioned together); the latest release only when that tag has none.
+  // The download goes to a temporary file and is checked against the release's SHA256SUMS.txt (0.4.0+) before it
+  // replaces anything; a mismatch is discarded.
   var L=["$ErrorActionPreference='Stop'","[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
     "$h=@{ 'User-Agent'='"+SELF_HTA+"' }; $r=$null",
     "try { $r=Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/"+SELF_REPO+"/releases/tags/v"+APP_VERSION+"' -Headers $h } catch { $r=$null }",
     "if(-not $r -or -not ($r.assets | Where-Object { $_.name -eq '"+ENGINE_EXE+"' })){ $r=Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/"+SELF_REPO+"/releases/latest' -Headers $h }",
     "$a=$r.assets | Where-Object { $_.name -eq '"+ENGINE_EXE+"' } | Select-Object -First 1",
     "if(-not $a){ throw 'The latest release has no "+ENGINE_EXE+" asset' }",
-    "Invoke-WebRequest -UseBasicParsing -Uri $a.browser_download_url -OutFile '"+dq+"' -Headers $h",
-    "Write-Output ('DL_OK '+$r.tag_name)"];
+    "$tmp=Join-Path $env:TEMP ('latdl_'+[guid]::NewGuid().ToString('N')+'.exe')",
+    "Invoke-WebRequest -UseBasicParsing -Uri $a.browser_download_url -OutFile $tmp -Headers $h",
+    "$v='no-checksum-file'; $s=$r.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1",
+    "if($s){ $sums=(Invoke-WebRequest -UseBasicParsing -Uri $s.browser_download_url -Headers $h).Content",
+    "  $line=($sums -split '[\\r\\n]+') | Where-Object { $_ -match '\\s"+ENGINE_EXE.replace(/\./g,"\\.")+"\\s*$' } | Select-Object -First 1",
+    "  $want=if($line){ ($line -split '\\s+')[0] } else { '' }; $have=(Get-FileHash $tmp -Algorithm SHA256).Hash",
+    "  if(-not $want -or $want.ToLower() -ne $have.ToLower()){ Remove-Item $tmp -Force; throw ('SHA-256 mismatch: the release lists '+$want+', the download is '+$have) }",
+    "  $v='sha256-verified' }",
+    "Copy-Item $tmp '"+dq+"' -Force; Remove-Item $tmp -Force",
+    "Write-Output ('DL_OK '+$r.tag_name+' '+$v)"];
   try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(e){ setStatus("Could not stage the download: "+e.message,"err"); return; }
   setStatus("Downloading the engine from GitHub...","muted");
   var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1'], false);
   try{ fso.DeleteFile(ps1); }catch(e0){}
-  var tag=(String(r.log).match(/DL_OK\s+(\S+)/)||[])[1];
-  if(tag && checkEngine()) setStatus("Engine "+tag+" downloaded: "+EXE,"ok");
+  var m=/DL_OK\s+(\S+)\s+(\S+)/.exec(String(r.log));
+  if(m && checkEngine()) setStatus("Engine "+m[1]+" downloaded ("+(m[2]==="sha256-verified"?"SHA-256 verified against the release checksums":"that release has no checksum file - not verified")+"): "+EXE,"ok");
   else { appendLog("--- engine download ---\n"+r.log); showLog();
-    setStatus("Download failed (offline, or no release published yet). Copy "+ENGINE_EXE+" next to this .hta.","err"); }
+    setStatus("Download failed (offline, checksum mismatch, or no release published yet) - see the log. Copy "+ENGINE_EXE+" next to this .hta.","err"); }
 }
 function checkElevation(){
   try{ var r=runBat(['net session > nul 2>&1 && echo ELEVATED> "__LOG__"'], false); ELEVATED=/ELEVATED/.test(r.log); }catch(e){ ELEVATED=false; }
@@ -988,7 +1001,20 @@ var COLTIPS = { timeline: {
   SessionRef:"Number of the remote session (Remote sessions tab) this event was stitched into.",
   Process:"Process involved: the program that performed the logon or used the credentials, or the new process (4688 / Sysmon 1).",
   CommandLine:"Command line of the process, service or scheduled task, when it was logged.",
-  Details:"Event specifics the engine extracted: service file, group, share, failure reason, privileges..." } };
+  Details:"Event specifics the engine extracted: service file, group, share, failure reason, privileges..." },
+  files: {
+  File:"The source log exactly as the engine read it (path, or live channel name).",
+  Hostname:"Host the engine attributed the file to, from the collection path.",
+  LogSource:"Friendly name of the log (Security, System, TerminalServices-LSM...).",
+  SizeBytes:"Size of the source file in bytes when it was read.",
+  Sha256:"SHA-256 of the source file as it was read (chain of custody): record it in the case notes; the Event Viewer temporary copy is checked against it.",
+  RecordsRead:"Records the Windows event log API returned for this file.",
+  EventsKept:"Records this engine normalised and kept.",
+  Skipped:"Records that could not be read or normalised.",
+  Duplicates:"Records already seen in this run (the same log collected twice).",
+  Filtered:"Records outside the date window, or dropped as machine / system-account noise.",
+  Failed:"Yes when the file could not be read at all (not an EVTX, corrupt, access denied).",
+  Error:"Why the file failed, or why no hash could be computed." } };
 var LOGON_TYPE_TIPS = {
   "0":"0 = System: used by the operating system itself at startup.",
   "2":"2 = Interactive: at the console - keyboard, KVM or VM console (also runas).",
@@ -1350,7 +1376,8 @@ function openInEventViewer(row){
   if(!s){ setStatus("This event has no source log / record id (results from an older engine) - Process again.","err"); return; }
   if(s.file){ if(!fileSeen(s.src)){ setStatus("Source log not found: "+s.src+" - the evidence was moved, or these results were made on another machine.","err"); return; }
     var lf=s.src;
-    if(isLongPath(s.src)){ try{ lf=evxShortCopy(s.src); via=" - from a temporary copy (Event Viewer cannot open a path over 259 characters)"; }
+    if(isLongPath(s.src)){ try{ lf=evxShortCopy(s.src); via=" - from a temporary copy (Event Viewer cannot open a path over 259 characters"+
+          (EVXHASH[s.src]==="verified" ? "; SHA-256 verified against files.csv)" : "; size checked, these results carry no hash)"); }
       catch(ec){ setStatus("Could not copy "+s.label+" to a short path for Event Viewer (it cannot open a path over 259 characters): "+ec.message,"err"); return; } }
     arg='/l:"'+lf+'"'; }
   else { var h=hostKey(cell(d,row,"Hostname")), me=hostKey(machineName()); // live results: SourceFile is the channel of the machine that was read
@@ -1364,7 +1391,7 @@ function openInEventViewer(row){
    underneath reads the \\?\ form. Such a log is opened from a copy at a short path: one read of the evidence through
    \\?\, never a write. Copies live in %TEMP%\LoginActivityTriage-evx (only copies, never links into evidence) and are
    removed at the next start; the Event Log service keeps a log it opened locked for a while after Event Viewer closes. */
-var EVXCOPY={};
+var EVXCOPY={}, EVXHASH={};   // source path -> copy path; source path -> "verified" | "nohash"
 function evxDir(){ try{ return new ActiveXObject("Scripting.FileSystemObject").GetSpecialFolder(2)+"\\LoginActivityTriage-evx"; }catch(e){ return ""; } }
 function evxShortCopy(src){
   var fso=new ActiveXObject("Scripting.FileSystemObject"), c=EVXCOPY[src], from=lpForm(src);
@@ -1376,7 +1403,19 @@ function evxShortCopy(src){
   // cmd copy, not FSO: inside mshta File.Copy / CopyFile fail on a \\?\ source (0x800a0005, VERIFIED) though FileExists sees it
   var r=runBat(['copy /b /y "'+batEsc(from)+'" "'+batEsc(c)+'" > "__LOG__" 2>&1'], false);
   if(!fso.FileExists(c) || fso.GetFile(c).Size!==fso.GetFile(from).Size) throw new Error(trimStr(r.log)||"the copy failed");
+  // 0.4.0: files.csv carries the SHA-256 of each source log as it was analysed; the copy is checked against it (certutil).
+  var want=evxExpectedHash(src); EVXHASH[src]="nohash";
+  if(want){ var hr=runBat(['certutil -hashfile "'+batEsc(c)+'" SHA256 > "__LOG__" 2>&1'], false), have="", hl=String(hr.log).split(/\r?\n/);
+    for(var i=0;i<hl.length;i++){ var t=hl[i].replace(/\s+/g,""); if(/^[0-9a-f]{64}$/i.test(t)){ have=t; break; } }
+    if(!have || have.toLowerCase()!==want.toLowerCase()){ try{ fso.DeleteFile(c); }catch(eh){}
+      throw new Error("the copy's SHA-256 ("+(have||"not computed")+") does not match files.csv ("+want+") - the evidence changed since the run, or the copy is corrupt"); }
+    EVXHASH[src]="verified"; }
   EVXCOPY[src]=c; return c; }
+/* The SHA-256 files.csv recorded for a source log (0.4.0+ results), or "" when these results carry none. */
+function evxExpectedHash(src){ var fd=DATA.files; if(!fd || fd.idx["Sha256"]==null || fd.idx["File"]==null) return "";
+  var want=String(src).toLowerCase();
+  for(var i=0;i<fd.rows.length;i++) if(String(cell(fd,fd.rows[i],"File")).toLowerCase()===want) return trimStr(cell(fd,fd.rows[i],"Sha256"));
+  return ""; }
 /* Removes the copies evxShortCopy made. Only this app's own entries are touched: a child folder named by uid() that holds
    plain files and no subfolder. Nothing is deleted THROUGH a reparse point (junction / symbolic link) - neither the cache
    root nor a child nor a file - so a link planted in the cache can never reach evidence or any other folder; such entries
@@ -1438,9 +1477,10 @@ function windowNote(){
       " (the engine window of that run) - Process again to analyse the wider window.","muted");
 }
 function parseCli(){
-  var t=tokenizeCmdTail(), cli={input:"", outDir:"", auto:false, from:"", to:"", tz:"", selftest:false};
+  var t=tokenizeCmdTail(), cli={input:"", outDir:"", auto:false, from:"", to:"", tz:"", selftest:false, offline:false};
   for(var i=0;i<t.length;i++){ var a=t[i], m;
     if(/^[\/\-]{1,2}auto$/i.test(a)){ cli.auto=true; continue; }
+    if(/^[\/\-]{1,2}offline$/i.test(a)){ cli.offline=true; continue; }
     if(/^[\/\-]{1,2}selftest$/i.test(a)){ cli.selftest=true; continue; }
     if((m=a.match(/^[\/\-]{1,2}from[:=](\d{4}-\d{2}-\d{2})$/i))){ cli.from=m[1]; continue; }
     if((m=a.match(/^[\/\-]{1,2}to[:=](\d{4}-\d{2}-\d{2})$/i))){ cli.to=m[1]; continue; }
@@ -1606,6 +1646,9 @@ function init(){
   trace("init: wiring done"); checkElevation(); updateLiveWarn(); trace("elevated="+ELEVATED);
   checkEngine(); trace("engine="+EXE+" v"+ENGINE_VER);
   var cli=parseCli(), had=false; trace("cli input="+cli.input+" selftest="+cli.selftest);
+  OFFLINE=cli.offline || envOffline();
+  if(OFFLINE){ $("apppill").innerHTML="app v"+APP_VERSION+" &middot; offline"; $("apppill").title="Offline mode (/offline or LAT_OFFLINE=1): GitHub is not contacted - no update check, no engine or app download.";
+    appendLog("Offline mode: no GitHub update check or download ("+(cli.offline?"/offline":"LAT_OFFLINE")+")."); }
   try{ had=applyCli(cli); }catch(e){ appendLog("CLI parse error: "+e.message); }
   // A rejected CLI input keeps its "CLI input not found" status (the default prompt used to overwrite it).
   if(!had){ $("inMode").value="d"; if(!cli.input || !trimStr($("status").innerText)) setStatus("Pick an event-log folder (or 'This machine'), set the target hostname, then Process. Or Load results...","muted"); }
@@ -1624,7 +1667,10 @@ var MANUAL_URL = "https://bpmorris22.github.io/LoginActivityTriage/manual.html";
 function openManual(){ var p=(htaFolder()||"")+"\\docs\\manual.html"; openUrl(fileExists(p) ? p : MANUAL_URL); }
 function openHelp(){ try{ $("helpVer").innerHTML="v"+APP_VERSION+(ENGINE_VER?" &middot; engine v"+ENGINE_VER:""); }catch(e){} showEl("helpModal",true); }
 function closeHelp(){ showEl("helpModal",false); }
-var SELF_LATEST="", SELF_ASSET_URL="";
+var SELF_LATEST="", SELF_ASSET_URL="", SELF_SUMS_URL="";
+/* Offline mode: /offline on the command line or LAT_OFFLINE=1 in the environment. Nothing is fetched from GitHub. */
+var OFFLINE=false;
+function envOffline(){ try{ var v=new ActiveXObject("WScript.Shell").Environment("PROCESS")("LAT_OFFLINE")+""; return /^(1|true|yes|on)$/i.test(trimStr(v)); }catch(e){ return false; } }
 function selfVerNewer(r,l){ var a=String(r).split("."),b=String(l).split("."),n=Math.max(a.length,b.length);
   for(var i=0;i<n;i++){ var x=parseInt(a[i],10)||0,y=parseInt(b[i],10)||0; if(x!==y) return x>y; } return false; }
 function selfPath(){ try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); if(/\.hta$/i.test(p) && fileExists(p)) return p; }catch(e){}
@@ -1639,25 +1685,36 @@ function checkSelfUpdate(){
         var latest=m[1]; if(!selfVerNewer(latest,APP_VERSION)){ ap.className="pill ok"; ap.title="Up to date - v"+APP_VERSION+" is the latest release."; return; }
         var url="", re=/"browser_download_url"\s*:\s*"([^"]+\.hta)"/ig, mm; while((mm=re.exec(t))){ url=mm[1]; if(mm[1].toLowerCase().indexOf(SELF_HTA.toLowerCase())>=0) break; }
         if(!url) return; SELF_LATEST=latest; SELF_ASSET_URL=url;
+        var su=/"browser_download_url"\s*:\s*"([^"]+\/SHA256SUMS\.txt)"/i.exec(t); SELF_SUMS_URL=su?su[1]:"";   // 0.4.0+ releases carry checksums
         ap.className="pill bad"; ap.innerHTML="app v"+APP_VERSION+" &middot; update v"+latest;
         var b=$("selfUpd"); b.innerHTML="Update to v"+latest; b.className="btn primary";
       }catch(e){} };
     x.send(); }catch(e){}
 }
 function doSelfUpdate(){
+  if(OFFLINE){ setStatus("Offline mode (/offline or LAT_OFFLINE): downloads are disabled. Copy the new "+SELF_HTA+" over this file by hand.","err"); return; }
   if(!SELF_ASSET_URL){ setStatus("No update available (or offline).","muted"); return; }
   var target=selfPath(); if(!/\.hta$/i.test(target)){ setStatus("Can't locate this app's own file to update in place.","err"); return; }
   if(!confirm("Download "+SELF_HTA+" v"+SELF_LATEST+" and replace this file?\n\n"+target+"\n\nThe engine exe is updated separately (Download engine).")) return;
   var fso=new ActiveXObject("Scripting.FileSystemObject"), ps1=fso.GetSpecialFolder(2)+"\\latupd_"+uid()+".ps1";
-  var tq=String(target).replace(/'/g,"''"), uq=String(SELF_ASSET_URL).replace(/'/g,"''");
+  var tq=String(target).replace(/'/g,"''"), uq=String(SELF_ASSET_URL).replace(/'/g,"''"), sq=String(SELF_SUMS_URL).replace(/'/g,"''");
+  // The download is checked against the release's SHA256SUMS.txt (0.4.0+ releases); a mismatch is discarded, not installed.
   var L=["$ErrorActionPreference='Stop'","[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
+    "$h=@{ 'User-Agent'='"+SELF_HTA+"' }",
     "$tmp=Join-Path $env:TEMP ('latupd_'+[guid]::NewGuid().ToString('N')+'.hta')",
-    "Invoke-WebRequest -UseBasicParsing -Uri '"+uq+"' -OutFile $tmp -Headers @{ 'User-Agent'='"+SELF_HTA+"' }",
-    "if((Get-Item $tmp).Length -lt 2000){ throw 'downloaded file too small' }","Copy-Item $tmp '"+tq+"' -Force","Remove-Item $tmp -Force","Write-Output 'SELFUPD_OK'"];
+    "Invoke-WebRequest -UseBasicParsing -Uri '"+uq+"' -OutFile $tmp -Headers $h",
+    "if((Get-Item $tmp).Length -lt 2000){ throw 'downloaded file too small' }",
+    "$v='no-checksum-file'; $sums=''",
+    sq ? "$sums=(Invoke-WebRequest -UseBasicParsing -Uri '"+sq+"' -Headers $h).Content" : "",
+    "$line=($sums -split '[\\r\\n]+') | Where-Object { $_ -match '\\s"+SELF_HTA.replace(/\./g,"\\.")+"\\s*$' } | Select-Object -First 1",
+    "if($line){ $want=($line -split '\\s+')[0]; $have=(Get-FileHash $tmp -Algorithm SHA256).Hash",
+    "  if($want.ToLower() -ne $have.ToLower()){ Remove-Item $tmp -Force; throw ('SHA-256 mismatch: the release lists '+$want+', the download is '+$have) }; $v='sha256-verified' }",
+    "Copy-Item $tmp '"+tq+"' -Force","Remove-Item $tmp -Force","Write-Output ('SELFUPD_OK '+$v)"];
   try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(ew){ setStatus("Self-update stage failed: "+ew.message,"err"); return; }
   var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1'], false); try{ fso.DeleteFile(ps1); }catch(e0){}
-  if(/SELFUPD_OK/.test(r.log)){ setStatus("Updated to v"+SELF_LATEST+" - close and reopen the app.","ok"); showEl("selfUpd",false); }
-  else { appendLog("--- self-update ---\n"+r.log); setStatus("Self-update failed - see log.","err"); }
+  var m=/SELFUPD_OK\s+(\S+)/.exec(String(r.log));
+  if(m){ setStatus("Updated to v"+SELF_LATEST+(m[1]==="sha256-verified"?" (SHA-256 verified against the release checksums)":" (that release has no checksum file - not verified)")+" - close and reopen the app.","ok"); showEl("selfUpd",false); }
+  else { appendLog("--- self-update ---\n"+r.log); showLog(); setStatus("Self-update failed - see log (a checksum mismatch is not installed).","err"); }
 }
 
 /* Trace file for unattended runs (/selftest): %TEMP%\lat-hta-trace.log */
@@ -1671,7 +1728,7 @@ function trace(m){ if(!TRACE) return;
 window.onerror=function(msg,url,line){ JSERRORS.push(msg+" (line "+line+")"); trace("ERROR "+msg+" line "+line);
   try{ appendLog("Script error: "+msg+" (line "+line+")"); showLog(); }catch(e){} return true; };
 window.onload=function(){ trace("onload"); try{ init(); }catch(e){ trace("init threw "+(e.message||e)); JSERRORS.push("init: "+(e.message||e)); }
-  trace("init done"); if(!TRACE) try{ window.setTimeout(checkSelfUpdate,800); }catch(e2){} };
+  trace("init done"); if(!TRACE && !OFFLINE) try{ window.setTimeout(checkSelfUpdate,800); }catch(e2){} };
 </script>
 <div id="iocModal" class="modal hide" onclick="if((event.srcElement||{}).id==='iocModal')showEl('iocModal',false)">
   <div class="mcard">
@@ -1741,10 +1798,12 @@ window.onload=function(){ trace("onload"); try{ init(); }catch(e){ trace("init t
       <li>Process events (4688 / Sysmon 1) are kept only when they match a remote-exec pattern or ran inside a remote logon session. Machine / system-account logon noise is dropped unless you tick <i>keep</i>.</li>
     </ul>
     <h3>Command line</h3>
-    <p><code>mshta "LoginActivityTriage.hta" "&lt;evtxDir | file.evtx | live | resultsDir&gt;" ["&lt;outDir&gt;"] [/auto] [/tz:&lt;id&gt;] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]</code></p>
+    <p><code>mshta "LoginActivityTriage.hta" "&lt;evtxDir | file.evtx | live | resultsDir&gt;" ["&lt;outDir&gt;"] [/auto] [/tz:&lt;id&gt;] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd] [/offline]</code></p>
     <ul>
       <li>A results folder (with <code>summary.json</code>) opens straight in the viewer; an EVTX source is prefilled and processed with <code>/auto</code>. <code>/from</code> <code>/to</code> set the date window (engine import window and view filter).</li>
       <li>Output goes to <code>_Processed\&lt;host&gt;\LoginActivityTriage</code> next to this app; a <code>runinfo.json</code> provenance entry with a triage summary is appended after each run (read by the DFIR Artifact Finder).</li>
+      <li><code>/offline</code> (or the environment variable <code>LAT_OFFLINE=1</code>) keeps the app off the network: no GitHub update check, no engine or app download. Downloads are otherwise checked against the release's <code>SHA256SUMS.txt</code>.</li>
+      <li>The Import log records the <b>SHA-256</b> and size of every source log as it was analysed (chain of custody); the temporary copy opened in Event Viewer is checked against it.</li>
     </ul>
     <h3>Limits</h3>
     <ul>
