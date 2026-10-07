@@ -133,6 +133,9 @@
   .kh{display:inline-block;margin-left:5px;padding:0 6px;border-radius:9px;font-size:10px;line-height:14px;font-family:Segoe UI,Tahoma,sans-serif;background:#0f2a2a;color:#56d4c4;border:1px solid #1b6b63;vertical-align:baseline}
   .khgrid td,.khgrid th{border-bottom:1px solid #30363d;padding:3px 4px;cursor:default}
   .khgrid input.txt{width:100%;box-sizing:border-box}
+  /* Hint text must not pass for a saved row (separate rules: one unknown selector drops the whole rule in IE). */
+  .khgrid input:-ms-input-placeholder{color:#6e7681;font-style:italic;font-weight:normal}
+  .khgrid input::placeholder{color:#6e7681;font-style:italic;font-weight:normal}
   .khbad input.txt{border-color:#f85149}
   #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:160px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px;width:100%;box-sizing:border-box}
   .hide{display:none}
@@ -289,7 +292,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.4.4";
+var APP_VERSION = "0.4.5";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -1254,13 +1257,33 @@ function khText(s){ s=String(s==null?"":s); if(!KNOWN.n) return s; var low=s.toL
   return s.replace(IPV4G, function(ip){ var k=KNOWN.map[ip]; return (k && low.indexOf(k.lname)<0) ? ip+" ["+k.name+"]" : ip; }); }
 /* The known names of the IPs in a text (added to a row's search text). */
 function khNames(s){ var out="", m, re=new RegExp(IPV4G.source,"g"); while((m=re.exec(s))){ var k=KNOWN.map[m[0]]; if(k) out+="\u0001"+k.name; } return out; }
-function loadKnown(dir){
-  var p=dir+"\\knownhosts.csv", list=[];
+function khReadCsv(p){
+  var list=[];
   try{ if(fileExists(p)){ var rows=parseCSV(readUtf8(p));
     for(var i=0;i<rows.length;i++){ var r=rows[i]; if(i===0 && /^ip$/i.test(trimStr(r[0]))) continue;
       list.push({ ip:unguard(r[0]||""), name:unguard(r[1]||""), note:unguard(r[2]||"") }); } } }
-  catch(e){ appendLog("knownhosts.csv unreadable: "+e.message); }
-  khSet(list); if(KNOWN.n) appendLog("Known hosts: "+KNOWN.n+" mapping(s) from "+p);
+  catch(e){ appendLog(p+" unreadable: "+e.message); }
+  return list;
+}
+/* Case list: every host processed into the same _Processed folder (_Processed\<host>\LoginActivityTriage)
+   shares _Processed\knownhosts.csv, so a label learned on one host applies to all of them. Each results
+   folder keeps its own copy too (portable). A results folder with knownhosts.private opts out. Only the
+   HTA's standard layout shares: elsewhere there is no telling which folders belong to one case. */
+var KH_CASE={ path:"", root:"", on:false, base:{} };
+function khCasePath(dir){
+  dir=String(dir||"").replace(/[\\\/]+$/,""); var root=parentDir(parentDir(dir));
+  return (/\\LoginActivityTriage$/i.test(dir) && /\\_Processed$/i.test(root)) ? root+"\\knownhosts.csv" : "";
+}
+function loadKnown(dir){
+  var p=dir+"\\knownhosts.csv", local=khReadCsv(p), shared=[], i, m={};
+  KH_CASE={ path:khCasePath(dir), root:"", on:false, base:{} };
+  if(KH_CASE.path){ KH_CASE.root=parentDir(KH_CASE.path); KH_CASE.on=!fileExists(dir+"\\knownhosts.private"); }
+  if(KH_CASE.on) shared=khReadCsv(KH_CASE.path);
+  for(i=0;i<shared.length;i++) KH_CASE.base[trimStr(shared[i].ip).toLowerCase()]=shared[i];
+  // The case list wins for an address both hold: it is the newest case-wide label.
+  var list=local.concat(shared); khSet(list);
+  if(local.length) appendLog("Known hosts: "+local.length+" mapping(s) from "+p);
+  if(shared.length) appendLog("Known hosts: "+shared.length+" mapping(s) from the case list "+KH_CASE.path);
 }
 function khLoopback(ip){ ip=String(ip).toLowerCase(); return /^127\./.test(ip) || ip==="0.0.0.0" || ip==="::1" || ip==="::"; }
 /* IP -> name pairs the logs themselves recorded, offered in the dialog (never applied on their own).
@@ -1301,10 +1324,11 @@ function khLearned(){
   return out;
 }
 function khRange(n){ return !n.first ? "no date" : (n.first===n.last ? n.first : n.first+" .. "+n.last); }
-var KH_LEARNED=[];
+var KH_LEARNED=[], KH_SHOWCONF=false;
 function openKnown(){
   if(!RESDIR){ setStatus("Load results first - known hosts are saved with them","err"); return; }
-  khRenderTable(khList()); KH_LEARNED=khLearned(); khRenderLearned();
+  khRenderTable(khList()); KH_LEARNED=khLearned(); KH_SHOWCONF=false; khRenderLearned();
+  $("khScope").innerHTML=khScopeHtml();
   $("khInfo").innerHTML=""; $("khPaste").value=""; showEl("khPasteWrap",false); showEl("khModal",true);
 }
 function closeKnown(){ showEl("khModal",false); }
@@ -1312,8 +1336,8 @@ function khRenderTable(list){
   var h=['<table class="khgrid"><thead><tr><th style="width:24%">IP address</th><th style="width:30%">Host name</th><th>Note</th><th style="width:28px"></th></tr></thead><tbody>'];
   if(!list.length) list=[{ ip:"", name:"", note:"" }];
   for(var i=0;i<list.length;i++){ var e=list[i];
-    h.push('<tr'+(e.bad?' class="khbad"':'')+'><td><input class="txt mono" value="'+esc(e.ip)+'" placeholder="10.10.20.33"></td>'+
-           '<td><input class="txt" value="'+esc(e.name)+'" placeholder="SQL01"></td><td><input class="txt" value="'+esc(e.note||"")+'" placeholder="optional"></td>'+
+    h.push('<tr'+(e.bad?' class="khbad"':'')+'><td><input class="txt mono" value="'+esc(e.ip)+'" placeholder="e.g. 10.10.20.33"></td>'+
+           '<td><input class="txt" value="'+esc(e.name)+'" placeholder="e.g. SQL01"></td><td><input class="txt" value="'+esc(e.note||"")+'" placeholder="note (optional)"></td>'+
            '<td><span class="lnk" title="Remove this row" onclick="khRemove('+i+')">&times;</span></td></tr>'); }
   h.push('</tbody></table>'); $("khTable").innerHTML=h.join("");
 }
@@ -1346,12 +1370,18 @@ function khAddPasted(){ var n=khMerge(khParse($("khPaste").value)); $("khPaste")
   $("khInfo").innerHTML=esc(n+" line(s) added - Save & apply to keep them"); }
 function khRenderLearned(){
   if(!KH_LEARNED.length){ $("khLearned").innerHTML='<div class="muted" style="font-size:12px">Nothing new - the logs resolved no other IP address to a name.</div>'; return; }
-  var h=['<table class="khgrid"><tbody>'], bulk=khBulk().length;
-  for(var i=0;i<KH_LEARNED.length;i++){ var e=KH_LEARNED[i];
-    h.push('<tr><td class="mono" style="width:24%">'+esc(e.ip)+'</td><td style="width:30%">'+(e.conflict?'<span class="err">?</span>':esc(e.name))+'</td><td class="muted">'+esc(e.note)+
+  var bulk=khBulk().length, nconf=0, i, e;
+  function row(e,i){ return '<tr><td class="mono" style="width:24%">'+esc(e.ip)+'</td><td style="width:30%">'+(e.conflict?'<span class="err">?</span>':esc(e.name))+'</td><td class="muted">'+esc(e.note)+
            (e.warn?' <span class="err">('+esc(e.warn)+')</span>':'')+'</td>'+
-           '<td style="width:40px">'+(e.conflict?'':'<span class="lnk" onclick="khAcceptLearned('+i+')">add</span>')+'</td></tr>'); }
+           '<td style="width:40px">'+(e.conflict?'':'<span class="lnk" onclick="khAcceptLearned('+i+')">add</span>')+'</td></tr>'; }
+  for(i=0;i<KH_LEARNED.length;i++) if(KH_LEARNED[i].conflict) nconf++;
+  // Many conflicts (a DHCP range over months of logs) would bury the usable rows: fold them into one line.
+  var fold=nconf>=4, h=['<table class="khgrid"><tbody>'];
+  for(i=0;i<KH_LEARNED.length;i++){ e=KH_LEARNED[i]; if(!(fold && e.conflict)) h.push(row(e,i)); }
   h.push('</tbody></table>');
+  if(fold){ h.push('<div style="font-size:12px;margin:4px 0"><span class="lnk" onclick="KH_SHOWCONF=!KH_SHOWCONF;khRenderLearned()">'+(KH_SHOWCONF?'hide':'show')+' '+nconf+
+      ' address(es) that reported several names</span> <span class="muted">- DHCP reuse, a shared gateway or a renamed / spoofed client; label those by hand</span></div>');
+    if(KH_SHOWCONF){ h.push('<table class="khgrid"><tbody>'); for(i=0;i<KH_LEARNED.length;i++) if(KH_LEARNED[i].conflict) h.push(row(KH_LEARNED[i],i)); h.push('</tbody></table>'); } }
   if(bulk>1) h.push('<span class="lnk" style="font-size:12px" onclick="khAcceptLearned(-1)">add all '+bulk+'</span>'+
                     (bulk<KH_LEARNED.length?' <span class="muted" style="font-size:12px">(conflicts and changes to your own labels are left out)</span>':''));
   $("khLearned").innerHTML=h.join("");
@@ -1371,18 +1401,53 @@ function khSave(){
     if(!isIpAddr(e.ip) || !e.name){ e.bad=true; bad++; } else ok.push(e); }
   if(bad){ khRenderTable(keep); $("khInfo").innerHTML='<span class="err">'+bad+' row(s) need a valid IP address and a host name</span>'; return; }
   khSet(ok);
-  var p=RESDIR+"\\knownhosts.csv", saved=false;
+  var p=RESDIR+"\\knownhosts.csv", saved=false, mk=RESDIR+"\\knownhosts.private", sh=$("khShared");
+  try{ if(sh && KH_CASE.path && !!sh.checked!==KH_CASE.on){
+      if(sh.checked){ new ActiveXObject("Scripting.FileSystemObject").DeleteFile(mk); KH_CASE.on=true; KH_CASE.base={}; }
+      else { writeUtf8(mk, "These results keep their own Known hosts list (not the case list "+KH_CASE.path+").\r\n", true); KH_CASE.on=false; } } }
+  catch(em){ appendLog("Known hosts sharing not changed: "+em.message); }
   try{ saved=khWrite(); }
   catch(e){ setStatus("Known hosts applied, but "+p+" could not be written: "+e.message,"err"); }
   closeKnown(); khApply();
-  if(saved) setStatus(KNOWN.n+" known host(s) applied and saved to "+p,"ok");
+  if(saved) setStatus(KNOWN.n+" known host(s) applied and saved to "+p+(KH_CASE.on?" and the case list "+KH_CASE.path:""),"ok");
 }
-/* Writes KNOWN to knownhosts.csv in the results folder (throws on failure); false when there was nothing to write. */
-function khWrite(){
-  var p=RESDIR+"\\knownhosts.csv", list=khList(), L=["Ip,Name,Note"];
+function khCsv(list){ var L=["Ip,Name,Note"];
   for(var i=0;i<list.length;i++) L.push(csvEsc(list[i].ip)+","+csvEsc(list[i].name)+","+csvEsc(list[i].note));
-  if(!list.length && !fileExists(p)) return false;
-  writeUtf8(p, L.join("\r\n")+"\r\n", true); return true;
+  return L.join("\r\n")+"\r\n"; }
+/* Writes KNOWN to knownhosts.csv in the results folder and, when shared, merges it into the case list
+   (throws on failure); false when there was nothing to write. The case list is re-read and only this
+   window's changes are applied (added / changed rows, and rows of the loaded case list that were
+   removed here), so another host's window saving in between loses nothing. */
+function khWrite(){
+  var p=RESDIR+"\\knownhosts.csv", list=khList(), wrote=false, k;
+  if(list.length || fileExists(p)){ writeUtf8(p, khCsv(list), true); wrote=true; }
+  if(KH_CASE.on){
+    var fresh=khReadCsv(KH_CASE.path), m={}, order=[], i;
+    for(i=0;i<fresh.length;i++){ k=trimStr(fresh[i].ip).toLowerCase(); if(!m.hasOwnProperty(k)) order.push(k); m[k]=fresh[i]; }
+    for(k in KH_CASE.base) if(KH_CASE.base.hasOwnProperty(k) && !KNOWN.map[k]) delete m[k];
+    for(i=0;i<list.length;i++){ k=list[i].ip; if(!m.hasOwnProperty(k)) order.push(k); m[k]=list[i]; }
+    var out=[]; for(i=0;i<order.length;i++) if(m.hasOwnProperty(order[i])) out.push(m[order[i]]);
+    if(out.length || fileExists(KH_CASE.path)){ writeUtf8(KH_CASE.path, khCsv(out), true); wrote=true; }
+    KH_CASE.base={}; for(i=0;i<out.length;i++) KH_CASE.base[trimStr(out[i].ip).toLowerCase()]=out[i];
+    khSet(out); // picks up what other hosts' windows added meanwhile
+  }
+  return wrote;
+}
+/* Result folders sharing the case list (for the dialog). */
+function khCaseHosts(){
+  var out=[]; if(!KH_CASE.root) return out;
+  try{ var fso=new ActiveXObject("Scripting.FileSystemObject");
+    for(var e=new Enumerator(fso.GetFolder(KH_CASE.root).SubFolders); !e.atEnd(); e.moveNext()){ var f=e.item();
+      if(fileExists(f.Path+"\\LoginActivityTriage\\summary.json") && !fileExists(f.Path+"\\LoginActivityTriage\\knownhosts.private")) out.push(f.Name); } }catch(x){}
+  return out;
+}
+function khScopeHtml(){
+  if(!KH_CASE.path) return 'Saved with these results only: they are not in a <code>_Processed\\&lt;host&gt;\\LoginActivityTriage</code> folder, so there is no case list to share.';
+  var hs=khCaseHosts();
+  return '<label title="Off: these results keep their own list (knownhosts.private marks the folder). Use it when this _Processed folder mixes customers - the same private address is a different machine at another site.">'+
+    '<input type="checkbox" id="khShared"'+(KH_CASE.on?' checked':'')+'> Share with every host in this case</label> &mdash; case list <code>'+esc(KH_CASE.path)+'</code>'+
+    (hs.length?', used by '+hs.length+' result folder(s): '+esc(hs.join(", ")):'')+'. '+
+    (KH_CASE.on ? 'Removing a row here removes it for all of them.' : 'Off for these results: they keep their own list; tick and save to join the case list.');
 }
 /* The scanned host's own address(es) from ipnames.csv (engine 0.4.4+: it authenticated to itself over
    the network) go into Known hosts on their own: after every Process, and on loading results that have
@@ -1872,6 +1937,7 @@ window.onload=function(){ trace("onload"); try{ init(); }catch(e){ trace("init t
     <span class="x" onclick="closeKnown()" title="Close">&times;</span>
     <h2>Known hosts</h2>
     <p class="muted">Label IP addresses with a host name everywhere they appear: tables, the detail card, the host filter, the overview, search and case notes. <b>Display only</b> &mdash; the engine CSVs and <i>Export view &rarr; CSV</i> keep the logged values. Saved with these results as <code>knownhosts.csv</code> (per case: the same private IP is a different machine at another site).</p>
+    <p class="muted" id="khScope" style="font-size:12px"></p>
     <div id="khTable"></div>
     <div class="row" style="margin-top:6px">
       <button class="btn" onclick="khAddRow()">+ Add row</button>

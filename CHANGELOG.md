@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.5 — 2026-10-07
+
+### Added
+- **Case-wide Known hosts.** Results in the HTA's standard `_Processed\<host>\LoginActivityTriage`
+  layout share `_Processed\knownhosts.csv`, so a label added or learned on one host (e.g. a server
+  whose logs name many clients) applies to every host processed into that folder.
+  - The dialog shows the case list path and the result folders using it.
+  - Removing a row removes it for all of them.
+  - Each save re-reads the case list and applies only that window's additions, changes and
+    removals, so two windows saving in turn lose nothing.
+  - Each results folder keeps its own `knownhosts.csv` copy.
+  - Untick **Share with every host in this case** for results that must keep their own list (e.g. a
+    `_Processed` folder holding more than one customer); this leaves a `knownhosts.private` marker.
+  - Results outside that layout keep a per-folder list as before.
+
+### Changed
+- **Known hosts → Learned from these logs** folds addresses that reported several names (DHCP ranges
+  over months of logs) into one *show N address(es)* line when there are four or more, so the usable
+  suggestions stand out.
+- The empty Known hosts row's hint text reads "e.g. 10.10.20.33", "e.g. SQL01" and "note (optional)"
+  in grey italics, so it can't be mistaken for a saved mapping.
+
 ## 0.4.4 — 2026-10-07
 
 ### Added
