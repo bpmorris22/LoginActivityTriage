@@ -64,12 +64,21 @@ public sealed class PowerShellNormalizer : IEventNormalizer
             var hostName = Grab(CtxHostName, ctx);
             var hostApp = Grab(CtxHostApp, ctx);
             if (!IsRemote(hostName, hostApp)) return null;
-            var user = Grab(CtxConnectedUser, ctx) ?? Grab(CtxUser, ctx);
-            NormalizerBase.SetUser(e, user);
+            var connected = Grab(CtxConnectedUser, ctx);
+            var processUser = Grab(CtxUser, ctx);
+            NormalizerBase.SetUser(e, connected ?? processUser);
             e.ProcessName = hostApp;
             e.EventType = "PowerShell command in remote session";
             e.CommandLine = NormalizerBase.Truncate(ev.Get("Payload") ?? Grab(CtxCommand, ctx) ?? string.Empty, 1000);
             e.Details = e.CommandLine;
+            // A RunAs / JEA endpoint runs wsmprovhost as the configured account: the record's SID is
+            // that account's, not the connected user's. Keep the connected user as the subject and drop
+            // the SID so it is never paired with the wrong name.
+            if (connected is not null && processUser is not null && !UserKey.Same(connected, processUser))
+            {
+                e.Sid = null;
+                e.Details = NormalizerBase.Join(e.Details, $"RunAs / JEA endpoint: process account {processUser}");
+            }
             NormalizerBase.Apply(e, new RemoteExecMatch(RemoteTechnique.PsRemoting, "PowerShell module logging (ServerRemoteHost)"));
             return e;
         }

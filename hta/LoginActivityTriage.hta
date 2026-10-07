@@ -20,11 +20,12 @@
 <!--
   Login Activity Triage - HTA front end for LoginActivityTriageCli.exe (same repo, C# / .NET 8).
 
-  ENGINE CONTRACT (LoginActivityTriageCli 0.2.x):
-    (0.2.1: --tz defaults to auto = each host's own UTC offset from System event 6013)
+  ENGINE CONTRACT (LoginActivityTriageCli 0.3.x; app and engine are released together with one version):
+    (--tz defaults to auto = each host's own UTC offset from System event 6013)
     LoginActivityTriageCli.exe (-d <folder> | -f <file.evtx> | --live) -o <outDir>
         [--tz <id|local|utc>] [--hours S-E] [--no-weekend] [--keep-noise] [--from <utc>] [--to <utc>]
-    writes to <outDir>: events.csv timeline.csv sessions.csv findings.csv users.csv sourceips.csv hosts.csv
+    writes to <outDir>: events.csv timeline.csv (the triage subset the Timeline loads) sessions.csv findings.csv
+                        users.csv (Sid column 0.3.2+) sourceips.csv hosts.csv
                         remotehosts.csv (0.2.1+; older results show "not found" on the Remote hosts tab) files.csv
                         summary.json run.log report-findings.html report-sessions.html
     Exit codes: 0 ok, 1 usage, 2 no EVTX found, 3 fatal, 4 no input could be read.
@@ -285,7 +286,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.3.2";
+var APP_VERSION = "0.3.3";
 var APP_NAME = "LoginActivityTriage";
 var ENGINE_EXE = "LoginActivityTriageCli.exe";
 var SELF_REPO = "bpmorris22/LoginActivityTriage", SELF_HTA = "LoginActivityTriage.hta";
@@ -314,7 +315,7 @@ var FILES = { findings:"findings.csv", sessions:"sessions.csv", events:"events.c
 var VIEWS = {
   findings: { ds:"findings", cols:["Severity","Rule","Timestamp","Host","User","SourceIp","Count","Mitre","Description"],
               sort:["Severity",-1], time:"Timestamp", host:"Host" },
-  sessions: { ds:"sessions", cols:["SessionRef","Start","End","DurationMinutes","Technique","Variant","Direction","Host","TargetHost","TargetHostName","User","InferredUser","CredentialsUsed","SourceIp","SourceHost","Confidence","Detail","Commands","EventCount"],
+  sessions: { ds:"sessions", cols:["SessionRef","Start","End","DurationMinutes","Technique","Variant","Direction","Host","TargetHost","TargetHostName","User","InferredUser","CredentialsUsed","SourceIp","SourceHost","LogonType","AuthPackage","Confidence","Detail","Commands","EventCount"],
               sort:["Start",1], time:"Start", host:"Host", tech:"Technique" },
   timeline: { ds:"events", cols:["Timestamp","Hostname","EventId","EventType","Technique","Result","User","Domain","SourceIp","Workstation","LogonType","AuthPackage","LogonId","SessionRef","Process","CommandLine","Details"],
               sort:["Timestamp",1], time:"Timestamp", host:"Hostname", tech:"Technique" },
@@ -404,6 +405,8 @@ function folderExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObj
 var MAXP=259;
 function isLongPath(p){ return String(p||"").length>MAXP; }
 function lpForm(p){ p=String(p||"").replace(/\//g,"\\");
+  if(/^\\\\\?\\(UNC\\)?[^\\]/i.test(p)) return p;        // already extended-length (drive or UNC): idempotent
+  if(/^\\\\\.\\/.test(p)) return "";                       // device form (\\.\) - not a file-system path this app can check
   if(/^[A-Za-z]:\\/.test(p)) return "\\\\?\\"+p;
   if(/^\\\\[^\\?.]/.test(p)) return "\\\\?\\UNC\\"+p.substring(2);
   return ""; }
@@ -424,6 +427,10 @@ function ensureFolder(p){ var fso=new ActiveXObject("Scripting.FileSystemObject"
   ensureFolder(fso.GetParentFolderName(p)); fso.CreateFolder(p); }
 function uid(){ return new Date().getTime()+""+Math.floor(Math.random()*100000); }
 function batEsc(s){ return String(s).replace(/%/g,"%%"); }
+/* A value that may be quoted into a generated .bat line. Inside double quotes cmd leaves & | ^ ( ) alone and batEsc
+   doubles %, but a double quote would end the argument and a line break would start a new command: neither can be
+   part of a Windows path (NTFS forbids the quote), so such a string is rejected rather than passed on. */
+function pathSafe(p){ p=String(p==null?"":p); return p.length>0 && !/["\x00-\x1f\x7f]/.test(p); }
 
 /* ---------- process execution (temp .bat; async with .done marker so the UI never freezes) ---------- */
 function runBat(lines, show){
@@ -500,7 +507,10 @@ function checkEngine(){
     old=selfVerNewer(APP_VERSION, ENGINE_VER);
     if(old){ $("engpill").className="pill bad"; $("engpill").innerHTML="engine v"+esc(ENGINE_VER)+" &middot; older than app";
       $("engpill").title="This engine is older than the app (v"+APP_VERSION+"): its results miss the fixes and columns of newer releases. Use Update engine, or put the matching "+ENGINE_EXE+" next to this .hta. "+EXE;
-      appendLog("Engine v"+ENGINE_VER+" at "+EXE+" is older than this app (v"+APP_VERSION+") - use Update engine for the matching release."); } }
+      appendLog("Engine v"+ENGINE_VER+" at "+EXE+" is older than this app (v"+APP_VERSION+") - use Update engine for the matching release."); }
+    else if(selfVerNewer(ENGINE_VER, APP_VERSION)){ $("engpill").innerHTML="engine v"+esc(ENGINE_VER)+" &middot; newer than app";
+      $("engpill").title="This engine is newer than the app (v"+APP_VERSION+"): columns it adds are shown in the detail card and exports, but update the app to match (the Update button appears when a release is available). "+EXE;
+      appendLog("Engine v"+ENGINE_VER+" at "+EXE+" is newer than this app (v"+APP_VERSION+") - update the app to the matching release."); } }
   else { $("engpill").className="pill bad"; $("engpill").innerHTML="engine: will not start";
     appendLog("Engine at "+EXE+" did not report a version. It needs the .NET 8 (or newer) runtime:\n"+r.log); showLog(); }
   $("exeline").innerHTML="Engine: <span class='mono'>"+esc(EXE)+"</span>";
@@ -510,17 +520,21 @@ function checkEngine(){
 function downloadEngine(){
   var dest=htaFolder()+"\\"+ENGINE_EXE, dq=String(dest).replace(/'/g,"''");
   var fso=new ActiveXObject("Scripting.FileSystemObject"), ps1=fso.GetSpecialFolder(2)+"\\latdl_"+uid()+".ps1";
+  // The engine of THIS app's release (the two are versioned together); the latest release only when that tag has none.
   var L=["$ErrorActionPreference='Stop'","[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
-    "$r=Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/"+SELF_REPO+"/releases/latest' -Headers @{ 'User-Agent'='"+SELF_HTA+"' }",
+    "$h=@{ 'User-Agent'='"+SELF_HTA+"' }; $r=$null",
+    "try { $r=Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/"+SELF_REPO+"/releases/tags/v"+APP_VERSION+"' -Headers $h } catch { $r=$null }",
+    "if(-not $r -or -not ($r.assets | Where-Object { $_.name -eq '"+ENGINE_EXE+"' })){ $r=Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/"+SELF_REPO+"/releases/latest' -Headers $h }",
     "$a=$r.assets | Where-Object { $_.name -eq '"+ENGINE_EXE+"' } | Select-Object -First 1",
     "if(-not $a){ throw 'The latest release has no "+ENGINE_EXE+" asset' }",
-    "Invoke-WebRequest -UseBasicParsing -Uri $a.browser_download_url -OutFile '"+dq+"' -Headers @{ 'User-Agent'='"+SELF_HTA+"' }",
+    "Invoke-WebRequest -UseBasicParsing -Uri $a.browser_download_url -OutFile '"+dq+"' -Headers $h",
     "Write-Output ('DL_OK '+$r.tag_name)"];
   try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(e){ setStatus("Could not stage the download: "+e.message,"err"); return; }
   setStatus("Downloading the engine from GitHub...","muted");
   var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1'], false);
   try{ fso.DeleteFile(ps1); }catch(e0){}
-  if(/DL_OK/.test(r.log) && checkEngine()) setStatus("Engine downloaded: "+EXE,"ok");
+  var tag=(String(r.log).match(/DL_OK\s+(\S+)/)||[])[1];
+  if(tag && checkEngine()) setStatus("Engine "+tag+" downloaded: "+EXE,"ok");
   else { appendLog("--- engine download ---\n"+r.log); showLog();
     setStatus("Download failed (offline, or no release published yet). Copy "+ENGINE_EXE+" next to this .hta.","err"); }
 }
@@ -571,6 +585,9 @@ function processRun(){
   var mode=$("inMode").value, inp=trimStr($("inPath").value);
   if(!requireHost()) return;
   var outdir=trimStr($("outDir").value);
+  if(mode!=="live" && inp && !pathSafe(inp)){ setStatus("The input path contains a quote or a control character and cannot be passed to the engine: "+inp,"err"); return; }
+  if(outdir && !pathSafe(outdir)){ setStatus("The output directory contains a quote or a control character: "+outdir,"err"); return; }
+  if(!pathSafe(tzArg())){ setStatus("The after-hours zone contains a quote or a control character: "+tzArg(),"err"); return; }
   if(mode==="d" && (!inp || !inputSeen(inp,true,"input folder"))){ setStatus("Directory not found: "+inp,"err"); return; }
   if(mode==="f" && (!inp || !inputSeen(inp,false,"input file"))){ setStatus("File not found: "+inp,"err"); return; }
   if(!outdir){ setStatus("Set an output directory","err"); return; }
@@ -581,6 +598,7 @@ function processRun(){
   var cmd='"'+batEsc(EXE)+'" '+buildArgs(mode, inp, outdir);
   appendLog("Running the engine:\n"+cmd+"\nA console window shows progress; results load automatically when it finishes."); showLog();
   BUSY=true; $("procBtn").disabled=true;
+  var prevStamp=summaryStamp(outdir);   // the summary already there, so a run that publishes nothing cannot pass as this run
   var ctx=runBatAsync([
     'set DOTNET_ROLL_FORWARD=Major',
     'title Login Activity Triage engine',
@@ -593,21 +611,25 @@ function processRun(){
   var t0=new Date().getTime();
   ctx.onTick=function(s){ setStatus("Engine running... "+s+"s elapsed (app stays responsive; results load when done)","muted"); };
   ctx.onTimeout=function(){ BUSY=false; $("procBtn").disabled=false; setStatus("Engine still running after 4 h - stopped watching. Check the console / output folder.","err"); };
-  ctx.onDone=function(log){ BUSY=false; $("procBtn").disabled=false; processDone(log, outdir, mode==="live"?"(live event logs)":inp, (new Date().getTime()-t0)/1000, t0); };
+  ctx.onDone=function(log){ BUSY=false; $("procBtn").disabled=false; processDone(log, outdir, mode==="live"?"(live event logs)":inp, (new Date().getTime()-t0)/1000, t0, prevStamp); };
   setStatus("Engine starting...","muted");
   window.setTimeout(function(){ pollDone(ctx); }, 1000);
 }
-/* A run counts only with a summary.json the engine published during this run (it is published
-   last, and only after a successful run) and no failing exit code. A failure leaves the previous
-   results - which the engine keeps untouched - unloaded and unrecorded. */
-function processDone(log, outdir, input, secs, startedMs){
+/* A run counts only with a summary.json the engine published during THIS run - generated after the run
+   started AND different from the summary that was in the folder before it (the engine publishes
+   summary.json last, and only after a successful run) - and no failing exit code. A failure leaves the
+   previous results - which the engine keeps untouched - unloaded and unrecorded. */
+function summaryStamp(outdir){ try{ var s=JSON.parse(readUtf8(outdir+"\\summary.json")); return String(s.generatedUtc||""); }catch(e){ return ""; } }
+function processDone(log, outdir, input, secs, startedMs, prevStamp){
   var rc=(String(log).match(/EXITCODE=(\d+)/)||[])[1];
   var runlog=outdir+"\\run.log"; if(fileExists(runlog)){ try{ appendLog("--- engine run.log ---\n"+readUtf8(runlog)); }catch(e){} }
   var sum=null; try{ sum=JSON.parse(readUtf8(outdir+"\\summary.json")); }catch(e1){}
-  var gen=sum && sum.generatedUtc ? Date.parse(String(sum.generatedUtc).replace(/\.\d+Z$/,"Z")) : NaN;
-  var fresh=!!sum && !isNaN(gen) && (!startedMs || gen >= startedMs-120000);
-  // No exit marker (console closed after the run, marker write failed): a summary published by
-  // this run is itself the engine's proof of a completed, successful run.
+  var stamp=sum && sum.generatedUtc ? String(sum.generatedUtc) : "";
+  var gen=stamp ? Date.parse(stamp.replace(/\.\d+Z$/,"Z")) : NaN;
+  // The engine runs on this machine's clock: 5 s covers rounding, never a previous run.
+  var fresh=!!sum && !isNaN(gen) && (!startedMs || gen >= startedMs-5000) && (!prevStamp || stamp!==prevStamp);
+  // No exit marker (console closed after the run, marker write failed): a summary that only this run
+  // can have published is itself the engine's proof of a completed, successful run.
   if(rc==null && fresh) rc="0";
   var prior=priorResultsNote(outdir);
   if(rc!=="0"){
@@ -619,7 +641,7 @@ function processDone(log, outdir, input, secs, startedMs){
     setStatus(why+" (exit "+(rc||"?")+") - see the log. "+prior, "err"); showLog(); return;
   }
   if(!fresh){
-    setStatus("The engine exited 0 but did not publish a summary.json for this run - see the log. "+prior, "err"); showLog(); return;
+    setStatus("The engine exited 0 but did not publish a new summary.json for this run ("+(stamp ? "the one present was generated "+fmtTs(stamp) : "none present")+") - see the log. "+prior, "err"); showLog(); return;
   }
   loadResults(outdir);
   writeRunInfo(outdir, input);
@@ -639,8 +661,12 @@ function writeRunInfo(outdir, input){
     try{ if(fileExists(p)){ var old=JSON.parse(readUtf8(p)); if(old && old.length!=null) arr=old; } }catch(e0){}
     var d=new Date(); function p2(x){ return (x<10?"0":"")+x; }
     var iso=d.getUTCFullYear()+"-"+p2(d.getUTCMonth()+1)+"-"+p2(d.getUTCDate())+"T"+p2(d.getUTCHours())+":"+p2(d.getUTCMinutes())+":"+p2(d.getUTCSeconds());
+    // The files this run actually published (the engine's set plus the app's own knownhosts.csv), not a fixed list.
+    var known=["events.csv","timeline.csv","sessions.csv","findings.csv","users.csv","sourceips.csv","hosts.csv","remotehosts.csv","files.csv",
+               "summary.json","run.log","report-findings.html","report-sessions.html","knownhosts.csv"], files=[];
+    for(var fi=0;fi<known.length;fi++) if(fileExists(parentDir(p)+"\\"+known[fi])) files.push(known[fi]);
     var ent={ app:APP_NAME, appVersion:APP_VERSION, engineVersion:ENGINE_VER, host:sanitHost($("hostName").value),
-              input:String(input||""), finishedUtc:iso, files:["events.csv","sessions.csv","findings.csv","users.csv","sourceips.csv","hosts.csv","files.csv","summary.json"],
+              input:String(input||""), finishedUtc:iso, files:files,
               summary:buildRunSummary() };
     if(CASE_FROM) ent.winFrom=CASE_FROM; if(CASE_TO) ent.winTo=CASE_TO;
     arr.push(ent); writeUtf8(p, JSON.stringify(arr,null,2));
@@ -699,6 +725,18 @@ function resultsFolderOf(p){
   if(folderExists(p) && fileExists(p+"\\summary.json")) return p;
   if(fileExists(p) && fileExists(parentDir(p)+"\\summary.json")) return parentDir(p);
   return "";
+}
+/* A results folder at a path over MAX_PATH: plain FSO cannot see it (so resultsFolderOf misses it) and ADODB cannot read
+   its files, so it must be recognised through the \\?\ form and refused with the cure - never handed to the engine as input. */
+function longResultsFolder(p){
+  p=String(p||"").replace(/[\\\/]+$/,""); if(!isLongPath(p)) return "";
+  if(lpKind(p)==="d" && lpKind(p+"\\summary.json")==="f") return p;
+  if(lpKind(p)==="f" && lpKind(parentDir(p)+"\\summary.json")==="f") return parentDir(p);
+  return "";
+}
+function refuseLongResults(p){
+  setStatus("This is a results folder at a path of "+p.length+" characters (over 259) - this app cannot load results from there. Copy the folder to a shorter path, then Load results.","err");
+  appendLog("Results folder refused (path over MAX_PATH): "+p);
 }
 function loadResults(dir){ trace("loadResults "+dir);
   try{
@@ -966,11 +1004,9 @@ var LOGON_TYPE_TIPS = {
   "13":"13 = CachedUnlock: unlock with cached credentials." };
 var AUTH_TIPS = {
   "kerberos":"Kerberos: domain authentication with tickets issued by a domain controller.",
-  "ntlm":"NTLM: challenge-response authentication. Used for local accounts, connections by IP address, workgroups, or when Kerberos is unavailable. A local account logging on over the network with NTLM is typical of lateral movement and pass-the-hash.",
+  "ntlm":"NTLM: challenge-response authentication. Used for local accounts, connections by IP address, workgroups, or when Kerberos is unavailable. A local account logging on over the network with NTLM is typical of lateral movement and pass-the-hash. The Details column says 'NTLM V1' when the legacy, crackable LM package was used (otherwise V2).",
   "negotiate":"Negotiate (SPNEGO): chooses Kerberos when it can, otherwise NTLM. Typical for interactive and RDP logons.",
   "microsoft_authentication_package_v1_0":"MICROSOFT_AUTHENTICATION_PACKAGE_V1_0 (MSV1_0): the NTLM / local-account package - credential validation against the local account database or a domain controller.",
-  "ntlm v1":"NTLM V1: legacy NTLM - weak and crackable; should not be in use.",
-  "ntlm v2":"NTLM V2: current NTLM.",
   "cloudap":"CloudAP: Microsoft Entra ID (Azure AD) or Microsoft account sign-in.",
   "schannel":"Schannel: TLS client-certificate authentication.",
   "pku2u":"PKU2U: peer-to-peer certificate authentication between machines with no common domain (e.g. Entra-joined devices over RDP).",
@@ -1096,7 +1132,7 @@ function storyAround(mins){
   var d=ds(VIEWS[DETVIEW].ds), row=DETROW; if(!row) return;
   var t=msOf(cell(d,row,"Timestamp")||cell(d,row,"Start"));
   var user=bareUser(cell(d,row,"User")), ip=String(cell(d,row,"SourceIp")).split(";")[0], host=hostKey(cell(d,row,"Hostname")||cell(d,row,"Host"));
-  F.story={ t:t, win:mins*60000, user:user, ip:ip, host:host, sref:cell(d,row,"SessionRef")||cell(d,row,"SessionRef"),
+  F.story={ t:t, win:mins*60000, user:user, ip:ip, host:host, sref:cell(d,row,"SessionRef"),
             label:"story +/-"+mins+"m around "+fmtTs(cell(d,row,"Timestamp")||cell(d,row,"Start"))+" (user "+(user||"-")+", IP "+(ip||"-")+", host "+(host||"-")+")" };
   F.pin=null; setView("timeline");
 }
@@ -1333,15 +1369,32 @@ function evxDir(){ try{ return new ActiveXObject("Scripting.FileSystemObject").G
 function evxShortCopy(src){
   var fso=new ActiveXObject("Scripting.FileSystemObject"), c=EVXCOPY[src], from=lpForm(src);
   if(c && fso.FileExists(c)) return c;   // one copy per source log per session
-  var dir=evxDir(); if(!dir || !from) throw new Error("no temporary folder");
+  if(!pathSafe(src)) throw new Error("the source path contains a quote or a control character");
+  if(!from) throw new Error("unsupported path form (not a drive, UNC or \\\\?\\ path): "+src);
+  var dir=evxDir(); if(!dir) throw new Error("no temporary folder (TEMP is not set)");
   dir+="\\"+uid(); ensureFolder(dir); c=dir+"\\"+baseName(src);
   // cmd copy, not FSO: inside mshta File.Copy / CopyFile fail on a \\?\ source (0x800a0005, VERIFIED) though FileExists sees it
   var r=runBat(['copy /b /y "'+batEsc(from)+'" "'+batEsc(c)+'" > "__LOG__" 2>&1'], false);
   if(!fso.FileExists(c) || fso.GetFile(c).Size!==fso.GetFile(from).Size) throw new Error(trimStr(r.log)||"the copy failed");
   EVXCOPY[src]=c; return c; }
-function evxCleanup(){ var dir=evxDir(); if(!dir) return;   // copies Event Viewer / the Event Log service still hold stay until next time
+/* Removes the copies evxShortCopy made. Only this app's own entries are touched: a child folder named by uid() that holds
+   plain files and no subfolder. Nothing is deleted THROUGH a reparse point (junction / symbolic link) - neither the cache
+   root nor a child nor a file - so a link planted in the cache can never reach evidence or any other folder; such entries
+   are left alone and reported. A copy the Event Log service still holds open stays until the next start. */
+function isReparse(attrs){ return (attrs & 1024)!==0; }   // FILE_ATTRIBUTE_REPARSE_POINT
+function evxCleanup(){ var dir=evxDir(); if(!dir) return;
   try{ var fso=new ActiveXObject("Scripting.FileSystemObject"); if(!fso.FolderExists(dir)) return;
-    for(var e=new Enumerator(fso.GetFolder(dir).SubFolders); !e.atEnd(); e.moveNext()){ try{ fso.DeleteFolder(e.item().Path, true); }catch(e1){} } }catch(e2){} }
+    var root=fso.GetFolder(dir);
+    if(isReparse(root.Attributes)){ appendLog("Event Viewer copy cache "+dir+" is a junction / link - not cleaned."); return; }
+    var skipped=0;
+    for(var e=new Enumerator(root.SubFolders); !e.atEnd(); e.moveNext()){ var f=e.item();
+      if(isReparse(f.Attributes) || !/^\d{13,}$/.test(f.Name) || f.SubFolders.Count>0){ skipped++; continue; }
+      var files=[]; for(var fe=new Enumerator(f.Files); !fe.atEnd(); fe.moveNext()) files.push(fe.item());
+      var clean=true;
+      for(var i=0;i<files.length;i++){ if(isReparse(files[i].Attributes)){ clean=false; skipped++; continue; } try{ files[i].Delete(true); }catch(e1){ clean=false; } }
+      if(clean){ try{ f.Delete(false); }catch(e2){} } }   // empty by now: nothing left to recurse into
+    if(skipped) appendLog("Event Viewer copy cache: "+skipped+" entr"+(skipped===1?"y":"ies")+" not made by this app (link or unexpected content) left untouched in "+dir);
+  }catch(e3){} }
 
 /* ---------- command line (Artifact-Finder hand-off) ---------- */
 function getCommandLine(){
@@ -1404,8 +1457,11 @@ function applyCli(cli){
   if(!cli.input) return false;
   var fso=new ActiveXObject("Scripting.FileSystemObject");
   if(cli.outDir){ $("outDir").value=cli.outDir; OUT_TOUCHED=true; hostGuessFrom(cli.outDir); }
+  if(!pathSafe(cli.input) || (cli.outDir && !pathSafe(cli.outDir))){ setStatus("CLI input contains a quote or a control character: "+cli.input,"err"); appendLog("CLI input rejected (quote / control character): "+cli.input+" "+cli.outDir); return false; }
   var res=resultsFolderOf(cli.input);
   if(res){ appendLog("CLI: loading results "+res); window.setTimeout(function(){ loadResults(res); if(cli.selftest) runSelfTest(); },60); return true; }
+  var lres=longResultsFolder(cli.input);
+  if(lres){ refuseLongResults(lres); return false; }
   var lng=isLongPath(cli.input), lk=lng?lpKind(cli.input):"";   // FSO cannot see a 260+ char path: ask its \\?\ form
   if(/^live$/i.test(cli.input)){ $("inMode").value="live"; $("inPath").value=""; hostGuessFrom("live"); }
   else if(fso.FolderExists(cli.input) || lk==="d"){ $("inMode").value="d"; $("inPath").value=cli.input; }
@@ -1495,7 +1551,9 @@ function init(){
   $("tleBtn").onclick=openInTle;
   $("loadBtn").onclick=function(){ $("resPick").click(); };
   $("resPick").onchange=function(){ if(!this.value) return; var r=resultsFolderOf(this.value);
-    if(r) loadResults(r); else setStatus("That folder has no summary.json - pick a file inside an engine results folder.","err"); };
+    if(r){ loadResults(r); return; }
+    var lr=longResultsFolder(this.value);
+    if(lr) refuseLongResults(lr); else setStatus("That folder has no summary.json - pick a file inside an engine results folder.","err"); };
   $("logToggle").onclick=function(){ var l=$("log");
     if(l.style.display==="none"||!l.style.display){ if(!trimStr(l.innerHTML)){ l.innerHTML='<span class="muted">(empty - engine output appears here after a run)</span>'; l.setAttribute("data-ph","1"); } l.style.display="block"; this.innerHTML="Hide log"; }
     else { l.style.display="none"; this.innerHTML="Show log"; } };

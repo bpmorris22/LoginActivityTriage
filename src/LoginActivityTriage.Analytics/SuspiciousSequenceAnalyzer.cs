@@ -649,8 +649,7 @@ public sealed class SuspiciousSequenceAnalyzer
         foreach (var e in events.Where(e => e.EventId is 4728 or 4732 or 4756 && AccountClassifier.IsPrivilegedGroup(e.GroupName)))
         {
             var newAccount = created.FirstOrDefault(c =>
-                (c.Sid is not null && c.Sid == e.Sid || UserKey.Same(c.TargetUserName, e.TargetUserName)) &&
-                e.Timestamp >= c.Timestamp && e.Timestamp - c.Timestamp <= TimeSpan.FromDays(1));
+                SameCreatedAccount(c, e) && e.Timestamp >= c.Timestamp && e.Timestamp - c.Timestamp <= TimeSpan.FromDays(1));
             // The member's SID stays in the text once a name is resolved for it (local members log only the SID).
             var member = e.TargetUserName is null ? e.Sid
                 : e.Sid is null || SidResolver.IsSidNamed(e) ? e.TargetUserName : $"{e.TargetUserName} ({e.Sid})";
@@ -668,6 +667,19 @@ public sealed class SuspiciousSequenceAnalyzer
                 Mitre = newAccount is not null ? "T1136, T1098" : "T1098",
             };
         }
+    }
+
+    /// <summary>
+    /// The 4720 that created the member added by <paramref name="member"/>. When both events carry a
+    /// SID the SIDs decide: two local accounts with the same name on two hosts (backup, svc,
+    /// Administrator...) are different accounts. The name is used only when a SID is missing, and
+    /// then domain-aware, so HOSTA\backup is not HOSTB\backup.
+    /// </summary>
+    private static bool SameCreatedAccount(NormalizedEvent created, NormalizedEvent member)
+    {
+        if (created.Sid is not null && member.Sid is not null)
+            return string.Equals(created.Sid.Trim(), member.Sid.Trim(), StringComparison.OrdinalIgnoreCase);
+        return AccountKey.SameAccount(created.TargetUserName, created.TargetDomain, member.TargetUserName, member.TargetDomain);
     }
 
     private static IEnumerable<Finding> Kerberoasting(List<NormalizedEvent> events)

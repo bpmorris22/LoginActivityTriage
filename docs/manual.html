@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Login Activity Triage — Manual</title>
-<meta name="description" content="User manual for Login Activity Triage 0.3.2: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
+<meta name="description" content="User manual for Login Activity Triage 0.3.3: the HTA front end and the LoginActivityTriageCli engine for triaging Windows logons, RDP and lateral movement from EVTX.">
 <style>
   :root{
     --bg:#ffffff; --panel:#f6f8fa; --text:#1f2328; --muted:#59636e; --line:#d1d9e0; --accent:#0969da;
@@ -65,7 +65,7 @@
 <div class="layout">
 <nav class="toc" aria-label="Contents">
   <div class="brand">Login Activity Triage</div>
-  <div class="ver">Manual &middot; version 0.3.2</div>
+  <div class="ver">Manual &middot; version 0.3.3</div>
   <ol>
     <li><a href="#overview">What it does</a></li>
     <li><a href="#install">Install &amp; requirements</a></li>
@@ -202,9 +202,9 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
 <ul>
   <li>Square <strong>activity labels</strong> mark the session and power story: <code>Logon &middot; console / network / RDP / cached / unlock</code>, <code>Logon failed</code>, <code>Logoff</code>, <code>Disconnect</code>, <code>Reconnect</code>, <code>Boot</code>, <code>Shutdown</code>, <code>Restart</code> and <code>Unexpected shutdown</code>. Rounded pills are remote-access techniques.</li>
   <li>Row colours: red = failure, purple = remote execution, a yellow left edge = privileged, a red left edge = IOC hit.</li>
-  <li>Hover a <strong>column heading</strong> for what the column holds, and a dotted-underlined <strong>LogonType</strong> or <strong>AuthPackage</strong> value for its meaning (also in Remote sessions). <strong>SourceIp</strong> is the remote client: for an RDP logon, the machine the connection came from; the <strong>Workstation</strong> of a type 10 logon is the server's own name.</li>
+  <li>Hover a <strong>column heading</strong> for what the column holds, and a dotted-underlined <strong>LogonType</strong> or <strong>AuthPackage</strong> value for its meaning (the Remote sessions table shows the two columns too). <strong>SourceIp</strong> is the remote client: for an RDP logon, the machine the connection came from; the <strong>Workstation</strong> of a type 10 logon is the server's own name.</li>
   <li>Restarts and shutdowns (User32 1074) name the account and process that requested them.</li>
-  <li>Click an <strong>EventId</strong> (or <strong>Open in Event Viewer</strong> on the detail card) to open the source <code>.evtx</code> in Windows Event Viewer already filtered to that one record, to read the raw event as Windows renders it. The app runs <code>eventvwr /l:"&lt;file&gt;" /f:"*[System[(EventRecordID=&lt;n&gt;)]]"</code>; results from <em>This machine</em> open the live channel with <code>/c:</code> instead. The evidence must still be at the path it was processed from. Event Viewer cannot open a file whose path is over 259 characters (deep Velociraptor / KAPE trees), so such a log is opened from a copy in <code>%TEMP%\LoginActivityTriage-evx</code>, which the app removes at its next start. Event Viewer reads the file without changing it; <em>Clear Filter</em> in its Actions pane shows the whole log.</li>
+  <li>Click an <strong>EventId</strong> (or <strong>Open in Event Viewer</strong> on the detail card) to open the source <code>.evtx</code> in Windows Event Viewer already filtered to that one record, to read the raw event as Windows renders it. The app runs <code>eventvwr /l:"&lt;file&gt;" /f:"*[System[(EventRecordID=&lt;n&gt;)]]"</code>; results from <em>This machine</em> open the live channel with <code>/c:</code> instead. The evidence must still be at the path it was processed from. Event Viewer cannot open a file whose path is over 259 characters (deep Velociraptor / KAPE trees), so such a log is opened from a copy in <code>%TEMP%\LoginActivityTriage-evx</code>, which the app removes at its next start (only its own copies: a junction or link found in that folder is never followed, and a copy the Event Log service still holds open waits for the next start). The plain and the <code>\\?\</code> form of a long source path both work. Event Viewer reads the file without changing it; <em>Clear Filter</em> in its Actions pane shows the whole log.</li>
 </ul>
 
 <h3 id="tab-users">Users &amp; Source IPs</h3>
@@ -213,7 +213,7 @@ dotnet publish src\LoginActivityTriage.Cli -c Release -o hta\bin</code></pre>
   <li>Accounts are <strong>domain-aware</strong>: when one name is used by accounts of different domains (the local Administrator of several hosts, two forests), the Users tab shows separate <code>DOMAIN\user</code> rows. Events that recorded no domain stay on a bare-name row rather than being guessed into one of them.</li>
   <li><strong>UsedOthersCreds</strong> counts 4648 hand-offs in which the account used someone else's credentials; <strong>CredsUsedByOthers</strong> counts the reverse.</li>
   <li><strong>SystemAccount</strong> rows (computer, SYSTEM, service accounts) are listed but scored 0.</li>
-  <li>The detail card shows the account's <strong>Sid</strong> as logged (also searchable and in <em>Export view &rarr; CSV</em>; not a table column). Group-membership events (4728 / 4732 / 4756) log a <em>local</em> member by SID only: the account's name comes from another event that pairs that SID with it (its 4720 creation, a 4624 logon), and the finding keeps the SID beside the name. A member that no event names stays listed by its SID.</li>
+  <li>The detail card shows the account's <strong>Sid</strong> as logged (also searchable and in <em>Export view &rarr; CSV</em>; not a table column). Group-membership events (4728 / 4732 / 4756) log a <em>local</em> member by SID only: the account's name comes from a Security event that pairs that SID with it (its 4720 creation, a 4624 logon), and the finding keeps the SID beside the name. A member that no event names stays listed by its SID. Two accounts are the same account only when their SIDs match: a second local <code>backup</code> on another host is not the one created there. A PowerShell remoting record from a RunAs / JEA endpoint names the connected user but is logged under the endpoint's own account, so it never lends that account's SID a name.</li>
 </ul>
 
 <h3 id="tab-hosts">Local hosts &amp; Remote hosts</h3>
@@ -348,7 +348,11 @@ LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machin
   <tr><th>Symptom</th><th>What to do</th></tr>
   <tr><td><em>engine: not found</em></td><td>Put <code>LoginActivityTriageCli.exe</code> next to the HTA or in <code>.\bin</code>, or use <strong>Download engine</strong> (latest GitHub release).</td></tr>
   <tr><td><em>engine v&hellip; &middot; older than app</em></td><td>The engine next to the app is from an older release, so its results miss that release's fixes and columns. Use <strong>Update engine</strong> (latest GitHub release) or copy the matching <code>LoginActivityTriageCli.exe</code> next to the HTA, then <strong>Process</strong> again.</td></tr>
+  <tr><td><em>engine v&hellip; &middot; newer than app</em></td><td>The engine is from a newer release than this <code>.hta</code>; update the app (the <strong>Update</strong> button appears when a release is available) so the two match.</td></tr>
   <tr><td><em>engine: will not start</em></td><td>Install the .NET 8 (or newer) runtime; the log shows the error.</td></tr>
+  <tr><td>"This is a results folder at a path of &hellip; characters (over 259)"</td><td>Results can be <em>produced</em> at any path, but the app cannot <em>load</em> them from a path over 259 characters. Copy the results folder somewhere shorter and use <strong>Load results&hellip;</strong>.</td></tr>
+  <tr><td>"The input path contains a quote or a control character"</td><td>A Windows path cannot contain <code>"</code> or line breaks; the pasted text is not a path. Fix it and Process again.</td></tr>
+  <tr><td>"The engine exited 0 but did not publish a new summary.json for this run"</td><td>The console closed or was killed before the engine published its results; the folder still holds the previous run's files, which were not loaded. Run again and keep the console open.</td></tr>
   <tr><td>"None of the input logs could be read"</td><td>The files are not EVTX, are corrupt, or access was denied; see the Import log and <code>run.log</code>.</td></tr>
   <tr><td>"&hellip;is open in another program"</td><td>Close the results CSV in Timeline Explorer or Excel and process again; the previous results were left intact.</td></tr>
   <tr><td>Live run misses logons</td><td>The Security log needs elevation: use <strong>Relaunch elevated</strong>.</td></tr>
@@ -360,7 +364,7 @@ LoginActivityTriageCli --live          -o &lt;outDir&gt; [options]   this machin
 </table>
 
 <footer>
-  Login Activity Triage 0.3.2 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
+  Login Activity Triage 0.3.3 &middot; MIT licence &middot; &copy; 2026 Ben Morris &middot;
   <a href="https://github.com/bpmorris22/LoginActivityTriage">github.com/bpmorris22/LoginActivityTriage</a> &middot;
   see <code>CHANGELOG.md</code> for what changed in each version.
 </footer>

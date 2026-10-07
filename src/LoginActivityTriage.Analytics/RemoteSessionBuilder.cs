@@ -281,12 +281,16 @@ public sealed class RemoteSessionBuilder
             s.Detail = service is null ? null : $"Service {service.ServiceName}: {service.ServiceFileName}";
             var pipes = members.Where(m => m.EventId is 5145 or 17 or 18 && m.RelativeTargetName is not null)
                 .Select(m => m.RelativeTargetName!).Distinct(StringComparer.OrdinalIgnoreCase).Take(4).ToList();
+            // A service install alone, with no network logon, no pipe and no source address, is as
+            // likely PsExec run locally (psexec -s cmd on the box itself) as an unattributed remote run.
+            var unattributed = logon is null && pipes.Count == 0 && ip is null;
             s.Evidence = Evidence(
                 service is null ? null : $"service '{service.ServiceName}' installed ({service.EventId})",
                 pipes.Count > 0 ? $"pipe/file {string.Join(", ", pipes)}" : null,
                 members.Any(m => m.EventId is 4688 or 1) ? "process lineage" : null,
-                LogonText(logon));
-            s.Confidence = logon is not null && (service is not null || pipes.Count > 0) ? "High" : "Medium";
+                LogonText(logon),
+                unattributed ? "no network logon, pipe or source address: local use or unattributed" : null);
+            s.Confidence = logon is not null && (service is not null || pipes.Count > 0) ? "High" : unattributed ? "Low" : "Medium";
             yield return s;
         }
     }
@@ -511,7 +515,7 @@ public sealed class RemoteSessionBuilder
                 }
 
             var logon = b.Members.FirstOrDefault(m => m.EventId == 4624);
-            var s = Make(ctx, RemoteTechnique.Rdp, null, "Inbound", b.Members, logon, assign: false);
+            var s = Make(ctx, RemoteTechnique.Rdp, null, "Inbound", b.Members, logon);
             s.LogonType ??= 10;
             s.SourceIp = string.Join("; ", b.Members.Select(m => m.SourceIp)
                 .Where(i => !IpUtil.IsLocalOrBlank(i)).Distinct(StringComparer.OrdinalIgnoreCase));
@@ -724,7 +728,7 @@ public sealed class RemoteSessionBuilder
     }
 
     private static RemoteSession Make(HostContext ctx, string technique, string? variant, string direction,
-        IList<NormalizedEvent> members, NormalizedEvent? logon, bool assign = true)
+        IList<NormalizedEvent> members, NormalizedEvent? logon)
     {
         var all = new List<NormalizedEvent>(members);
         var logoff = ctx.LogoffFor(logon);
@@ -742,8 +746,7 @@ public sealed class RemoteSessionBuilder
         }
 
         all = all.Distinct().OrderBy(m => m.Timestamp).ToList();
-        if (assign) foreach (var m in all) ctx.Assigned.Add(m);
-        else foreach (var m in all) ctx.Assigned.Add(m);
+        foreach (var m in all) ctx.Assigned.Add(m);
 
         var user = logon?.TargetUserName
                    ?? all.Select(m => m.TargetUserName).FirstOrDefault(u => u is not null && !AccountClassifier.IsNoise(u))

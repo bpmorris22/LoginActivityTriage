@@ -141,6 +141,11 @@ public static class SidResolver
         {
             if (e.Sid is null || e.TargetUserName is null || AccountClassifier.IsWellKnownServiceSid(e.Sid)) continue;
             if (e.EventId is 4728 or 4732 or 4756) continue; // member SID with group-centric naming
+            // Only Security events pair the account's OWN SID with its name (TargetUserSid / SubjectUserSid).
+            // Other logs carry the SID the record was logged under, which is the process account: a
+            // PowerShell 4103 on a RunAs / JEA endpoint names the connected user but is logged under the
+            // RunAs account, and would teach that SID the wrong name.
+            if (!IsSecurityLog(e)) continue;
             names.TryAdd(e.Sid, (e.TargetUserName, e.TargetDomain));
         }
         var resolved = 0;
@@ -156,6 +161,10 @@ public static class SidResolver
         }
         return resolved;
     }
+
+    private static bool IsSecurityLog(NormalizedEvent e) =>
+        string.Equals(e.Channel, "Security", StringComparison.OrdinalIgnoreCase) ||
+        (e.Channel is null && string.Equals(e.LogSource, "Security", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>An account known only by its SID: the user field holds the event's own SID.</summary>
     public static bool IsSidNamed(NormalizedEvent e) =>

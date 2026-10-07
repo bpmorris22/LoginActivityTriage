@@ -84,4 +84,69 @@ public class SidResolutionTests
         Assert.Null(Assert.Single(users, u => u.User == "guess").Sid);
         Assert.DoesNotContain(users, u => u.User == LocalSid);
     }
+
+    /// <summary>
+    /// 0.3.2 regression (review 2026-10-07): once a local member was named, the group rule matched a
+    /// 4720 on ANOTHER host by bare name alone, so two different local accounts called "backup" on
+    /// two hosts produced a false Critical "New account added". With both SIDs present the SIDs decide.
+    /// </summary>
+    [Fact]
+    public void GroupRule_DoesNotMatchACreationOnAnotherHostByBareNameAlone()
+    {
+        var sidA = "S-1-5-21-1-1-1-1005";                                   // HOSTA\backup
+        var sidB = "S-1-5-21-1-2-3-1105";                                   // HOSTB\backup (the SID Logon() logs)
+        var created = Sec(4720, T0, "HOSTA", ("TargetUserName", "backup"), ("TargetDomainName", "HOSTA"), ("TargetSid", sidA),
+            ("SubjectUserSid", "S-1-5-21-1-1-1-500"), ("SubjectUserName", "admin"), ("SubjectDomainName", "HOSTA"));
+        var logonB = Logon(T0.AddHours(1), "HOSTB", "backup", "HOSTB", 2, null, "0x777");
+        var addedB = Sec(4732, T0.AddHours(2), "HOSTB", ("MemberName", "-"), ("MemberSid", sidB),
+            ("TargetUserName", "Administrators"), ("TargetDomainName", "Builtin"), ("TargetSid", "S-1-5-32-544"),
+            ("SubjectUserSid", "S-1-5-21-1-2-3-500"), ("SubjectUserName", "admin"), ("SubjectDomainName", "HOSTB"));
+
+        var events = Normalize(created, logonB, addedB);
+        var result = new SuspiciousSequenceAnalyzer().Run(events);
+
+        Assert.Equal("backup", events.Single(e => e.EventId == 4732).TargetUserName);   // still named by HOSTB's own logon
+        var f = Assert.Single(result.Findings, x => x.RuleName.Contains("privileged group"));
+        Assert.Equal("Member added to privileged group", f.RuleName);
+        Assert.Equal(FindingSeverity.High, f.Severity);
+        Assert.Equal("4732", f.RelatedEventIds);
+    }
+
+    /// <summary>
+    /// Review 2026-10-07: a RunAs / JEA remoting endpoint logs 4103 under the RunAs account's SID while
+    /// ContextInfo names the connected user. The resolver must not teach that SID the connected user's
+    /// name, or every nameless event under it (a 7045 the RunAs account installed) is misattributed.
+    /// </summary>
+    [Fact]
+    public void SidResolver_DoesNotNameARunAsSidAfterTheConnectedUser()
+    {
+        var runAsSid = "S-1-5-21-9-8-7-2001";                              // CONTOSO\svc_jea
+        var ctx = "Host Name = ServerRemoteHost\r\nHost Application = C:\\Windows\\system32\\wsmprovhost.exe -Embedding\r\n" +
+                  "User = CONTOSO\\svc_jea\r\nConnected User = CONTOSO\\jdoe\r\nCommand Name = Get-Service";
+        var ps4103 = Event(PsOperational, "Microsoft-Windows-PowerShell/Operational", 4103, T0, "SRV01",
+            new[] { ("ContextInfo", ctx), ("Payload", "CommandInvocation(Get-Service)") }, runAsSid);
+        var svc = ServiceInstall(T0.AddMinutes(1), "SRV01", "UpdaterSvc", "C:\\ProgramData\\upd\\u.exe", runAsSid);
+
+        var events = Normalize(ps4103, svc);
+        new SuspiciousSequenceAnalyzer().Run(events);
+
+        var e4103 = events.Single(e => e.EventId == 4103);
+        Assert.Equal("jdoe", e4103.TargetUserName);                         // the connected user stays the subject
+        Assert.Null(e4103.Sid);                                             // the RunAs SID is not the subject's
+        Assert.Contains("svc_jea", e4103.Details);
+        var e7045 = events.Single(e => e.EventId == 7045);
+        Assert.NotEqual("jdoe", e7045.TargetUserName);
+        Assert.Equal(runAsSid, e7045.Sid);
+    }
+
+    /// <summary>Names still come from Security events that pair the account's own SID with its name (4624 here).</summary>
+    [Fact]
+    public void SidResolver_StillNamesAServiceInstallFromASecurityLogon()
+    {
+        var events = Normalize(
+            Logon(T0, "SRV01", "jdoe", "CONTOSO", 10, "10.0.0.5", "0x77"),  // TargetUserSid S-1-5-21-1-2-3-1105
+            ServiceInstall(T0.AddMinutes(1), "SRV01", "UpdaterSvc", "C:\\ProgramData\\upd\\u.exe", "S-1-5-21-1-2-3-1105"));
+        new SuspiciousSequenceAnalyzer().Run(events);
+        Assert.Equal("jdoe", events.Single(e => e.EventId == 7045).TargetUserName);
+    }
 }

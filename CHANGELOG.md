@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.3.3 — 2026-10-07
+
+Fixes from the 4 and 7 October code reviews (`review-artifacts-2026-10-07` fixtures reproduce the engine items).
+
+### Fixed
+- **HTA: the Event Viewer copy cache is cleaned without following links.** The start-up cleanup of
+  `%TEMP%\LoginActivityTriage-evx` deleted every subfolder recursively through FileSystemObject, which
+  follows a junction or symbolic link: a link planted there would have exposed its target to the
+  delete. Cleanup now removes only this app's own entries (a uid-named folder holding plain files),
+  never deletes through a reparse point at the root, folder or file level, and reports what it left.
+- **HTA: input text is validated before it is quoted into the engine command.** A path over 259
+  characters that neither the plain nor the `\\?\` check can see is still passed on for the engine to
+  judge, but any input, output folder or time-zone value containing a double quote or a control
+  character is now refused (`pathSafe`) instead of being written into the generated `.bat` line, where a
+  quote could end the argument. The same check guards the command-line hand-off and the Event Viewer copy.
+- **HTA: an already-extended `\\?\` or `\\?\UNC\` source path works everywhere.** `lpForm` is now
+  idempotent, so results produced from a `\\?\` input open in Event Viewer; the `\\.\` device form is
+  reported as unsupported instead of as "no temporary folder".
+- **HTA: a run counts only with a summary.json that this run published.** The run must produce a
+  summary generated after it started (5 s tolerance, same clock) and different from the one in the folder
+  before it. Previously a summary up to two minutes older than the start passed when the exit marker was
+  missing (console closed or killed).
+- **HTA: a results folder at a path over 259 characters is refused with the cure** ("copy it to a shorter
+  path") on the command line and in *Load results…*, instead of being handed to the engine as EVTX
+  input and failing with "No .evtx files were found".
+- **Engine: the "New account added to privileged group" rule matched a creation on another host by bare
+  name.** Once 0.3.2 named local group members, two different local accounts with the same name on two
+  hosts (`backup` created on HOSTA, a different `backup` added to Administrators on HOSTB) produced a
+  false Critical. When both events carry a SID, only the SIDs decide; the name is used only when a SID is
+  missing, and then domain-aware.
+- **Engine: the SID resolver no longer learns names from RunAs / JEA remoting records.** A PowerShell
+  4103 on such an endpoint names the connected user but is logged under the endpoint's RunAs account, so
+  the resolver paired that account's SID with the connected user's name and applied it to events the
+  RunAs account logged (a 7045 install). Names are now learned only from Security events, which pair the
+  account's own SID with its name, and the 4103 keeps the connected user as its subject with the process
+  account noted in Details and no SID.
+- **Engine: a service install alone is no longer a High PsExec finding.** A `PSEXESVC` install with no
+  network logon, no pipe and no source address (PsExec run on the box itself, or an unattributed run) is
+  a Low-confidence session, so its finding is Medium and the evidence says why.
+- HTA `runinfo.json` lists the files the run actually published (it omitted `timeline.csv`,
+  `remotehosts.csv` and the HTML reports); the two "NTLM V1 / V2" tooltips that could never show were
+  folded into the NTLM tip (the LM package is in Details); the Remote sessions table shows LogonType and
+  AuthPackage, so the 0.3.2 note about value tooltips there is true.
+
+### Changed
+- **Update engine** downloads the engine of this app's own release (`v<app version>`) and falls back to
+  the latest release only when that tag has no engine asset, so the pair stays in step. An engine newer
+  than the app is now flagged too.
+- Tests: 133 (three new in `SidResolutionTests`).
+
 ## 0.3.2 — 2026-10-04
 
 ### Fixed
